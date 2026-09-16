@@ -7,7 +7,6 @@ import psycopg2
 st.set_page_config(page_title="Controle de Estoque - SENAI", layout="wide")
 
 # --- CONEXÃO COM O BANCO DE DADOS EM NUVEM ---
-# O Streamlit vai buscar o seu link do banco de dados nos "Segredos" da plataforma
 DB_URL = st.secrets["DB_URL"]
 
 def get_connection():
@@ -17,7 +16,6 @@ def init_db():
     conn = get_connection()
     cursor = conn.cursor()
     
-    # Tabela de Itens em Estoque por Unidade
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS estoque (
             id SERIAL PRIMARY KEY,
@@ -30,7 +28,6 @@ def init_db():
         )
     """)
     
-    # Tabela de Histórico de Movimentações
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS movimentacoes (
             id SERIAL PRIMARY KEY,
@@ -45,7 +42,6 @@ def init_db():
     conn.commit()
     conn.close()
 
-# Tenta iniciar o banco se já tiver o segredo configurado
 try:
     init_db()
 except Exception as e:
@@ -76,12 +72,12 @@ menu = st.sidebar.selectbox(
 UNIDADES_PADRAO = ["SENAI Barreiras", "SENAI Luis Eduardo", "Almoxarifado Central"]
 CATEGORIAS_PADRAO = [
     "Rede de Distribuição", "Motores Elétricos", "Comandos Elétricos", 
-    "Ferramentas de Medição", "Ferramentas Elétricas", "Kits Didáticos", "EPIs"
+    "Ferramentas de Medição", "Ferramentas Elétricas", "Kits Didáticos", "EPIs","Predial"
 ]
 
-# --- TELA 1: CONSULTA DE ESTOQUE ---
+# --- TELA 1: CONSULTA DE ESTOQUE (NOVO VISUAL COM FOTOS) ---
 if menu == "Visualizar Estoque":
-    st.subheader("Consulta Geral por Unidade")
+    st.subheader("Catálogo de Materiais")
     
     col1, col2 = st.columns(2)
     with col1:
@@ -89,7 +85,7 @@ if menu == "Visualizar Estoque":
     with col2:
         filtro_categoria = st.selectbox("Filtrar por Categoria", ["Todas"] + CATEGORIAS_PADRAO)
     
-    query = "SELECT id, unidade, nome_item, categoria, quantidade, unidade_medida FROM estoque WHERE 1=1"
+    query = "SELECT id, unidade, nome_item, categoria, quantidade, unidade_medida, imagem FROM estoque WHERE 1=1"
     params = []
     
     if filtro_unidade != "Todas":
@@ -102,9 +98,33 @@ if menu == "Visualizar Estoque":
     df_estoque = run_query(query, tuple(params))
     
     if not df_estoque.empty:
-        st.dataframe(df_estoque, use_container_width=True, hide_index=True)
+        # Cabeçalho da Lista
+        c_cod, c_img, c_desc, c_cat, c_qtd = st.columns([1, 2, 4, 3, 2])
+        c_cod.write("**CÓDIGO**")
+        c_img.write("**IMAGEM**")
+        c_desc.write("**DESCRIÇÃO (NOME)**")
+        c_cat.write("**CATEGORIA**")
+        c_qtd.write("**QUANTIDADE**")
+        st.divider()
+
+        # Renderiza cada item lado a lado
+        for _, row in df_estoque.iterrows():
+            c_cod, c_img, c_desc, c_cat, c_qtd = st.columns([1, 2, 4, 3, 2], vertical_alignment="center")
+            
+            c_cod.write(row["id"])
+            
+            if row["imagem"] is not None:
+                c_img.image(row["imagem"], width=80)
+            else:
+                c_img.caption("Sem imagem")
+                
+            c_desc.write(row["nome_item"])
+            c_cat.write(row["categoria"])
+            c_qtd.write(f"{row['quantidade']} {row['unidade_medida']}")
+            
+            st.divider()
     else:
-        st.info("Nenhum material encontrado com os filtros selecionados.")
+        st.info("Nenhum material encontrado. Cadastre itens na tela 'Entrada de Materiais'.")
 
 # --- TELA 2: ENTRADA DE MATERIAIS ---
 elif menu == "Entrada de Materiais":
