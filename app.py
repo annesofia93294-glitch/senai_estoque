@@ -72,10 +72,10 @@ menu = st.sidebar.selectbox(
 UNIDADES_PADRAO = ["SENAI Barreiras", "SENAI Luis Eduardo", "Almoxarifado Central"]
 CATEGORIAS_PADRAO = [
     "Rede de Distribuição", "Motores Elétricos", "Comandos Elétricos", 
-    "Ferramentas de Medição", "Ferramentas Elétricas", "Kits Didáticos", "EPIs","Predial"
+    "Ferramentas de Medição", "Ferramentas Elétricas", "Kits Didáticos", "EPIs"
 ]
 
-# --- TELA 1: CONSULTA DE ESTOQUE (NOVO VISUAL COM FOTOS) ---
+# --- TELA 1: CONSULTA DE ESTOQUE ---
 if menu == "Visualizar Estoque":
     st.subheader("Catálogo de Materiais")
     
@@ -113,8 +113,12 @@ if menu == "Visualizar Estoque":
             
             c_cod.write(row["id"])
             
+            # CORREÇÃO: Transformando em bytes puros
             if row["imagem"] is not None:
-                c_img.image(row["imagem"], width=80)
+                try:
+                    c_img.image(bytes(row["imagem"]), width=80)
+                except Exception:
+                    c_img.caption("Erro ao carregar")
             else:
                 c_img.caption("Sem imagem")
                 
@@ -200,8 +204,12 @@ elif menu == "Saída / Editar Estoque":
         qtd_atual = dados_item["quantidade"]
         imagem_atual = dados_item["imagem"]
         
+        # CORREÇÃO: Transformando em bytes puros
         if pd.notna(imagem_atual) and imagem_atual is not None:
-            st.image(imagem_atual, caption=nome_selecionado, width=250)
+            try:
+                st.image(bytes(imagem_atual), caption=nome_selecionado, width=250)
+            except Exception:
+                st.info("Erro ao exibir a imagem.")
         else:
             st.info("Este material não possui foto cadastrada.")
         
