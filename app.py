@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, date
 import psycopg2
 import requests
 from io import BytesIO
@@ -14,10 +14,23 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- ESTILO VISUAL CORPORATIVO (CSS) ---
+# --- ESTILO VISUAL CORPORATIVO E MENU AZUL SENAI (CSS) ---
 st.markdown("""
     <style>
     .main { background-color: #f8f9fa; }
+    
+    /* Estilização da Barra Lateral com Azul SENAI */
+    [data-testid="stSidebar"] {
+        background-color: #004a87;
+        color: white;
+    }
+    [data-testid="stSidebar"] .stMarkdown h3, 
+    [data-testid="stSidebar"] label, 
+    [data-testid="stSidebar"] .stSelectbox div {
+        color: white !important;
+    }
+    
+    /* Botões principais */
     .stButton>button {
         background-color: #004a87;
         color: white;
@@ -29,6 +42,12 @@ st.markdown("""
     .stButton>button:hover {
         background-color: #003366;
         color: white;
+    }
+    
+    /* Botão de Exclusão em Vermelho Corporativo */
+    .stButton.delete-btn>button {
+        background-color: #c0392b !important;
+        color: white !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -132,7 +151,6 @@ def upload_imgbb(imagem_upload):
 # --- CABEÇALHO COM LOGOTIPO INSTITUCIONAL DO SENAI ---
 col_logo, col_titulo = st.columns([1, 4])
 with col_logo:
-    # URL estável e garantida da logo corporativa do SENAI
     st.image("https://logodownload.org/wp-content/uploads/2019/08/senai-logo-1.png", width=140)
 with col_titulo:
     st.title("Sistema Integrado de Estoque")
@@ -159,68 +177,79 @@ if menu == "Visualizar Estoque":
     
     col1, col2 = st.columns(2)
     with col1:
-        filtro_unidade = st.selectbox("Filtrar por Unidade Atual", ["Todas"] + UNIDADES_PADRAO)
+        filtro_unidade = st.selectbox("Filtrar por Unidade Atual (Obrigatório)", ["Selecione uma Unidade"] + UNIDADES_PADRAO)
     with col2:
-        filtro_categoria = st.selectbox("Filtrar por Categoria", ["Todas"] + CATEGORIAS_PADRAO)
+        filtro_categoria = st.selectbox("Filtrar por Categoria (Opcional)", ["Todas"] + CATEGORIAS_PADRAO)
     
-    query = "SELECT id, unidade_origem, unidade_atual, nome_item, categoria, quantidade, unidade_medida, url_imagem FROM estoque_pro WHERE 1=1"
-    params = []
-    
-    if filtro_unidade != "Todas":
-        query += " AND unidade_atual = %s"
-        params.append(filtro_unidade)
-    if filtro_categoria != "Todas":
-        query += " AND categoria = %s"
-        params.append(filtro_categoria)
-        
-    with st.spinner("Carregando estoque..."):
-        df_estoque = run_query(query, tuple(params))
-    
-    if not df_estoque.empty:
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Total de Itens Listados", len(df_estoque))
-        m2.metric("Soma de Quantidades", int(df_estoque['quantidade'].sum()))
-        m3.metric("Categorias Envolvidas", df_estoque['categoria'].nunique())
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        c_cod, c_img, c_desc, c_cat, c_loc, c_qtd = st.columns([1, 2, 3, 2, 2, 2])
-        c_cod.write("**CÓDIGOS**")
-        c_img.write("**FOTO**")
-        c_desc.write("**MATERIAL**")
-        c_cat.write("**CATEGORIA**")
-        c_loc.write("**LOCALIZAÇÃO / ORIGEM**")
-        c_qtd.write("**QUANTIDADE**")
-        st.divider()
-
-        for _, row in df_estoque.iterrows():
-            c_cod, c_img, c_desc, c_cat, c_loc, c_qtd = st.columns([1, 2, 3, 2, 2, 2], vertical_alignment="center")
-            
-            c_cod.write(f"#{row['id']}")
-            
-            url_img = row.get("url_imagem")
-            if url_img and str(url_img).startswith("http"):
-                try:
-                    c_img.image(url_img, width=70)
-                except Exception:
-                    c_img.caption("Indisponível")
-            else:
-                c_img.caption("Sem foto")
-                
-            c_desc.write(row["nome_item"])
-            c_cat.write(row["categoria"])
-            
-            origem = row.get("unidade_origem", "Desconhecida")
-            atual = row.get("unidade_atual", "Desconhecida")
-            
-            if origem != atual:
-                c_loc.markdown(f"**{atual}**<br><span style='color:#c0392b; font-size:12px;'>Origem: {origem}</span>", unsafe_allow_html=True)
-            else:
-                c_loc.write(atual)
-                
-            c_qtd.write(f"**{row['quantidade']}** {row['unidade_medida']}")
-            st.divider()
+    if filtro_unidade == "Selecione uma Unidade":
+        st.info("Por favor, selecione uma unidade no filtro acima para carregar os itens correspondentes.")
     else:
-        st.info("Nenhum material encontrado com os filtros selecionados.")
+        query = "SELECT id, unidade_origem, unidade_atual, nome_item, categoria, quantidade, unidade_medida, url_imagem FROM estoque_pro WHERE unidade_atual = %s"
+        params = [filtro_unidade]
+        
+        if filtro_categoria != "Todas":
+            query += " AND categoria = %s"
+            params.append(filtro_categoria)
+            
+        with st.spinner("Carregando estoque..."):
+            df_estoque = run_query(query, tuple(params))
+        
+        if not df_estoque.empty:
+            # Métricas estilizadas e limpas com cores personalizadas via HTML
+            m1, m2, m3 = st.columns(3)
+            with m1:
+                st.markdown(f"""<div style="background-color:#eef4fb; padding:12px; border-radius:6px; border-left:4px solid #004a87;">
+                    <span style="font-size:13px; color:#555;">Total de Itens Listados</span><br>
+                    <span style="font-size:22px; font-weight:bold; color:#004a87;">{len(df_estoque)}</span></div>""", unsafe_allow_html=True)
+            with m2:
+                st.markdown(f"""<div style="background-color:#eef4fb; padding:12px; border-radius:6px; border-left:4px solid #004a87;">
+                    <span style="font-size:13px; color:#555;">Soma de Quantidades</span><br>
+                    <span style="font-size:22px; font-weight:bold; color:#004a87;">{int(df_estoque['quantidade'].sum())}</span></div>""", unsafe_allow_html=True)
+            with m3:
+                st.markdown(f"""<div style="background-color:#eef4fb; padding:12px; border-radius:6px; border-left:4px solid #004a87;">
+                    <span style="font-size:13px; color:#555;">Categorias Envolvidas</span><br>
+                    <span style="font-size:22px; font-weight:bold; color:#004a87;">{df_estoque['categoria'].nunique()}</span></div>""", unsafe_allow_html=True)
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            c_cod, c_img, c_desc, c_cat, c_loc, c_qtd = st.columns([1, 2, 3, 2, 2, 2])
+            c_cod.write("**CÓDIGOS**")
+            c_img.write("**FOTO**")
+            c_desc.write("**MATERIAL**")
+            c_cat.write("**CATEGORIA**")
+            c_loc.write("**LOCALIZAÇÃO / ORIGEM**")
+            c_qtd.write("**QUANTIDADE**")
+            st.divider()
+
+            for _, row in df_estoque.iterrows():
+                c_cod, c_img, c_desc, c_cat, c_loc, c_qtd = st.columns([1, 2, 3, 2, 2, 2], vertical_alignment="center")
+                
+                c_cod.write(f"#{row['id']}")
+                
+                url_img = row.get("url_imagem")
+                if url_img and str(url_img).startswith("http"):
+                    try:
+                        c_img.image(url_img, width=70)
+                    except Exception:
+                        c_img.caption("Indisponível")
+                else:
+                    c_img.caption("Sem foto")
+                    
+                c_desc.write(row["nome_item"])
+                c_cat.write(row["categoria"])
+                
+                origem = row.get("unidade_origem", "Desconhecida")
+                atual = row.get("unidade_atual", "Desconhecida")
+                
+                if origem != atual:
+                    c_loc.markdown(f"**{atual}**<br><span style='color:#c0392b; font-size:12px;'>Origem: {origem}</span>", unsafe_allow_html=True)
+                else:
+                    c_loc.write(atual)
+                    
+                c_qtd.write(f"**{row['quantidade']}** {row['unidade_medida']}")
+                st.divider()
+        else:
+            st.info("Nenhum material encontrado com os filtros selecionados.")
 
 # --- TELA 2: ENTRADA DE MATERIAIS ---
 elif menu == "Entrada de Materiais":
@@ -316,7 +345,7 @@ elif menu == "Saída / Empréstimo / Edição":
                 st.warning(f"Este material está emprestado e pertence originalmente a {origem_atual}.")
 
         st.divider()
-        acao = st.radio("Escolha a Operação:", ["Dar Baixa (Saída Definitiva)", "Empréstimo / Enviar para Outra Unidade", "Editar Informações do Item"])
+        acao = st.radio("Escolha a Operação:", ["Dar Baixa (Saída Definitiva)", "Empréstimo / Enviar para Outra Unidade", "Editar Informações / Origem / Excluir Item"])
         
         if acao == "Dar Baixa (Saída Definitiva)":
             quantidade_saida = st.number_input("Quantidade para Retirar", min_value=1, max_value=int(qtd_atual) if qtd_atual > 0 else 1, step=1)
@@ -371,29 +400,71 @@ elif menu == "Saída / Empréstimo / Edição":
                 st.success(f"Material transferido com sucesso para {nova_unidade_atual}.")
                 st.rerun()
 
-        elif acao == "Editar Informações do Item":
+        elif acao == "Editar Informações / Origem / Excluir Item":
             novo_nome = st.text_input("Corrigir Nome do Material", value=nome_selecionado)
             nova_qtd_total = st.number_input("Corrigir Quantidade Total", min_value=0, value=int(qtd_atual), step=1)
+            
+            # Opção para corrigir a unidade de origem (caso cadastrado na unidade errada antes)
+            idx_origem = UNIDADES_PADRAO.index(origem_atual) if origem_atual in UNIDADES_PADRAO else 0
+            nova_origem = st.selectbox("Corrigir Unidade Proprietária (Origem Correta)", UNIDADES_PADRAO, index=idx_origem)
+            
             nova_imagem = st.file_uploader("Atualizar Foto", type=["png", "jpg", "jpeg"])
             
-            if st.button("Salvar Alterações Cadastrais"):
-                if nova_imagem is not None:
-                    novo_link = upload_imgbb(nova_imagem)
-                    if novo_link:
-                        execute_db("UPDATE estoque_pro SET nome_item = %s, quantidade = %s, url_imagem = %s WHERE id = %s",
-                                   (novo_nome.strip().title(), nova_qtd_total, novo_link, item_id_selecionado))
-                else:
-                    execute_db("UPDATE estoque_pro SET nome_item = %s, quantidade = %s WHERE id = %s",
-                               (novo_nome.strip().title(), nova_qtd_total, item_id_selecionado))
-                st.success("Alterações salvas com sucesso.")
-                st.rerun()
+            st.markdown("<br>", unsafe_allow_html=True)
+            col_salvar, col_excluir = st.columns(2)
+            
+            with col_salvar:
+                if st.button("Salvar Alterações Cadastrais"):
+                    if nova_imagem is not None:
+                        novo_link = upload_imgbb(nova_imagem)
+                        if novo_link:
+                            execute_db("UPDATE estoque_pro SET nome_item = %s, quantidade = %s, unidade_origem = %s, url_imagem = %s WHERE id = %s",
+                                       (novo_nome.strip().title(), nova_qtd_total, nova_origem, novo_link, item_id_selecionado))
+                    else:
+                        execute_db("UPDATE estoque_pro SET nome_item = %s, quantidade = %s, unidade_origem = %s WHERE id = %s",
+                                   (novo_nome.strip().title(), nova_qtd_total, nova_origem, item_id_selecionado))
+                    st.success("Alterações salvas com sucesso.")
+                    st.rerun()
+            
+            with col_excluir:
+                confirmar_exclusao = st.checkbox("Confirmar exclusão definitiva do item")
+                if st.button("Excluir Item do Sistema"):
+                    if confirmar_exclusao:
+                        execute_db("DELETE FROM estoque_pro WHERE id = %s", (item_id_selecionado,))
+                        execute_db(
+                            "INSERT INTO movimentacoes_pro (data_hora, unidade, nome_item, tipo, quantidade, responsavel) VALUES (%s, %s, %s, %s, %s, %s)",
+                            (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), unidade_selecionada, nome_selecionado, "EXCLUSÃO", qtd_atual, "Responsável Local")
+                        )
+                        st.success("Item excluído com sucesso.")
+                        st.rerun()
+                    else:
+                        st.error("Marque a caixa de confirmação para poder excluir o item.")
 
 # --- TELA 4: HISTÓRICO E AUDITORIA ---
 elif menu == "Histórico de Movimentações":
     st.subheader("Auditoria de Movimentações (Entradas, Saídas e Empréstimos)")
+    
+    col_d1, col_d2 = st.columns(2)
+    with col_d1:
+        data_inicio = st.date_input("Data Inicial", value=date.today().replace(day=1))
+    with col_d2:
+        data_fim = st.date_input("Data Final", value=date.today())
+        
     with st.spinner("Carregando histórico..."):
         df_logs = run_query("SELECT data_hora, unidade, nome_item, tipo, quantidade FROM movimentacoes_pro ORDER BY id DESC")
+        
     if not df_logs.empty:
-        st.dataframe(df_logs, use_container_width=True, hide_index=True)
+        # Converte a coluna de data para filtrar pelo período escolhido
+        df_logs['data_convertida'] = pd.to_datetime(df_logs['data_hora']).dt.date
+        df_filtrado = df_logs[
+            (df_logs['data_convertida'] >= data_inicio) & 
+            (df_logs['data_convertida'] <= data_fim)
+        ]
+        df_filtrado = df_filtrado.drop(columns=['data_convertida'])
+        
+        if not df_filtrado.empty:
+            st.dataframe(df_filtrado, use_container_width=True, hide_index=True)
+        else:
+            st.info("Nenhuma movimentação encontrada no período selecionado.")
     else:
         st.info("Nenhuma movimentação registrada até o momento.")
