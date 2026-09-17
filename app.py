@@ -1,9 +1,10 @@
-
 import streamlit as st
 import pandas as pd
 from datetime import datetime
 import psycopg2
 import requests
+from io import BytesIO
+from PIL import Image
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Controle de Estoque - SENAI", layout="wide")
@@ -18,7 +19,6 @@ def init_db():
     conn = get_connection()
     cursor = conn.cursor()
     
-    # Garante que a tabela principal correta exista
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS estoque_pro (
             id SERIAL PRIMARY KEY,
@@ -66,18 +66,34 @@ def execute_db(query, params=()):
             conn.commit()
     st.cache_data.clear() 
 
+# COMPRESSÃO E UPLOAD PROFISSIONAL DE IMAGEM
 def upload_imgbb(imagem_upload):
-    url = "https://api.imgbb.com/1/upload"
-    params = {"key": st.secrets["IMGBB_API_KEY"]}
-    files = {"image": imagem_upload.getvalue()}
-    
-    with st.spinner("Enviando imagem para o servidor seguro..."):
-        resposta = requests.post(url, params=params, files=files)
-        if resposta.status_code == 200:
-            return resposta.json()["data"]["url"]
-        else:
-            st.error("Falha ao processar a imagem.")
-            return None
+    try:
+        # Abre a imagem com Pillow e redimensiona para ficar leve (máx 800px)
+        img = Image.open(imagem_upload)
+        img.thumbnail((800, 800))
+        
+        # Converte para bytes otimizados
+        buffer = BytesIO()
+        # Mantém o formato original ou converte para JPEG padrão se preferir
+        formato = img.format if img.format in ["JPEG", "PNG"] else "JPEG"
+        img.save(buffer, format=formato, quality=85)
+        buffer.seek(0)
+        
+        url = "https://api.imgbb.com/1/upload"
+        params = {"key": st.secrets["IMGBB_API_KEY"]}
+        files = {"image": buffer.getvalue()}
+        
+        with st.spinner("Otimizando e enviando imagem..."):
+            resposta = requests.post(url, params=params, files=files)
+            if resposta.status_code == 200:
+                return resposta.json()["data"]["url"]
+            else:
+                st.error("Falha ao enviar imagem para o servidor.")
+                return None
+    except Exception as e:
+        st.error(f"Erro ao processar o arquivo de imagem: {e}")
+        return None
 
 # --- INTERFACE PRINCIPAL ---
 st.title("📦 Sistema Integrado de Estoque - SENAI (Pro)")
@@ -129,8 +145,13 @@ if menu == "Visualizar Estoque":
             
             c_cod.write(row["id"])
             
-            if row["url_imagem"]:
-                c_img.image(row["url_imagem"], width=80)
+            # Validação segura para evitar erros caso a coluna venha vazia/nula
+            url_img = row.get("url_imagem")
+            if url_img and str(url_img).startswith("http"):
+                try:
+                    c_img.image(url_img, width=80)
+                except Exception:
+                    c_img.caption("Erro ao carregar")
             else:
                 c_img.caption("Sem imagem")
                 
@@ -140,7 +161,7 @@ if menu == "Visualizar Estoque":
             
             st.divider()
     else:
-        st.info("Nenhum material encontrado. Cadastre um item na aba 'Entrada de Materiais' para começar.")
+        st.info("Nenhum material encontrado.")
 
 # --- TELA 2: ENTRADA DE MATERIAIS ---
 elif menu == "Entrada de Materiais":
@@ -189,7 +210,7 @@ elif menu == "Entrada de Materiais":
                     "INSERT INTO movimentacoes_pro (data_hora, unidade, nome_item, tipo, quantidade, responsavel) VALUES (%s, %s, %s, %s, %s, %s)",
                     (data_atual, unidade, nome_item, "ENTRADA", quantidade, "Não informado")
                 )
-                st.success(f"Entrada registrada com sucesso!")
+                st.success("Entrada registrada com sucesso!")
 
 # --- TELA 3: SAÍDA E EDIÇÃO DE MATERIAIS ---
 elif menu == "Saída / Editar Estoque":
@@ -203,7 +224,7 @@ elif menu == "Saída / Editar Estoque":
     )
     
     if itens_disponiveis.empty:
-        st.warning(f"Nenhum item cadastrado nesta unidade.")
+        st.warning("Nenhum item cadastrado nesta unidade.")
     else:
         opcoes_itens = {row["id"]: f"{row['nome_item']} (Estoque: {row['quantidade']} {row['unidade_medida']})" for _, row in itens_disponiveis.iterrows()}
         item_id_selecionado = st.selectbox(
@@ -213,8 +234,11 @@ elif menu == "Saída / Editar Estoque":
         dados_item = itens_disponiveis[itens_disponiveis["id"] == item_id_selecionado].iloc[0]
         nome_selecionado, qtd_atual, imagem_atual = dados_item["nome_item"], dados_item["quantidade"], dados_item["url_imagem"]
         
-        if imagem_atual:
-            st.image(imagem_atual, caption=nome_selecionado, width=250)
+        if imagem_atual and str(imagem_atual).startswith("http"):
+            try:
+                st.image(imagem_atual, caption=nome_selecionado, width=250)
+            except Exception:
+                st.info("Erro ao exibir a foto.")
         else:
             st.info("Este material não possui foto.")
         
