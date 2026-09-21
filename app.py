@@ -266,7 +266,8 @@ if menu == "Visualizar Estoque":
                     else:
                         c_loc.write(atual)
                     
-                    c_qtd.write(f"**{row['quantidade']}** {row['unidade_medida']}")
+                    unidade_medida_atual = row.get("unidade_medida") or "Unidade (un)"
+                    c_qtd.write(f"**{row['quantidade']}** {unidade_medida_atual}")
                     
                     col_btn1, col_btn2 = c_acao.columns(2)
                     with col_btn1:
@@ -332,6 +333,9 @@ if menu == "Visualizar Estoque":
                                 else:
                                     nome_limpo = novo_nome.strip().title()
                                     
+                                    # Garantir que a unidade de medida nunca seja None/vazia
+                                    medida_segura = row.get('unidade_medida') if pd.notna(row.get('unidade_medida')) else "Unidade (un)"
+                                    
                                     # Se houver transferência imediata junto com a edição
                                     if fazer_transferencia and unidade_destino_transf and qtd_transf > 0:
                                         if qtd_transf > nova_qtd:
@@ -358,7 +362,7 @@ if menu == "Visualizar Estoque":
                                             else:
                                                 execute_db(
                                                     "INSERT INTO estoque_pro (unidade_origem, unidade_atual, nome_item, categoria, quantidade, unidade_medida, url_imagem) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                                                    (nova_origem, unidade_destino_transf, nome_limpo, nova_categoria, qtd_transf, row['unidade_medida'], row.get('url_imagem'))
+                                                    (nova_origem, unidade_destino_transf, nome_limpo, nova_categoria, qtd_transf, medida_segura, row.get('url_imagem'))
                                                 )
                                             
                                             execute_db(
@@ -457,7 +461,7 @@ elif menu == "Saída / Empréstimo":
     if itens_disponiveis.empty:
         st.warning("Nenhum item cadastrado nesta unidade.")
     else:
-        opcoes_itens = {row["id"]: f"#{row['id']} - {row['nome_item']} (Qtd: {row['quantidade']} {row['unidade_medida']}) - Origem: {row['unidade_origem']}" for _, row in itens_disponiveis.iterrows()}
+        opcoes_itens = {row["id"]: f"#{row['id']} - {row['nome_item']} (Qtd: {row['quantidade']} {row.get('unidade_medida', 'un')}) - Origem: {row['unidade_origem']}" for _, row in itens_disponiveis.iterrows()}
 
         item_id_selecionado = st.selectbox(
             "Selecione o Material", options=list(opcoes_itens.keys()), format_func=lambda x: opcoes_itens[x]
@@ -466,6 +470,7 @@ elif menu == "Saída / Empréstimo":
         dados_item = itens_disponiveis[itens_disponiveis["id"] == item_id_selecionado].iloc[0]
         nome_selecionado, qtd_atual, imagem_atual = dados_item["nome_item"], dados_item["quantidade"], dados_item["url_imagem"]
         origem_atual = dados_item["unidade_origem"]
+        medida_atual_item = dados_item.get("unidade_medida") if pd.notna(dados_item.get("unidade_medida")) else "Unidade (un)"
         
         col_img, col_info = st.columns([1, 2])
         with col_img:
@@ -479,7 +484,7 @@ elif menu == "Saída / Empréstimo":
         with col_info:
             st.markdown(f"**Item:** {nome_selecionado}")
             st.markdown(f"**Categoria:** {dados_item['categoria']}")
-            st.markdown(f"**Estoque Disponível:** {qtd_atual} {dados_item['unidade_medida']}")
+            st.markdown(f"**Estoque Disponível:** {qtd_atual} {medida_atual_item}")
             st.markdown(f"**Unidade Proprietária (Origem):** {origem_atual}")
             if origem_atual != unidade_selecionada:
                 st.warning(f"Este material está emprestado e pertence originalmente a {origem_atual}.")
@@ -534,7 +539,7 @@ elif menu == "Saída / Empréstimo":
                     else:
                         execute_db(
                             "INSERT INTO estoque_pro (unidade_origem, unidade_atual, nome_item, categoria, quantidade, unidade_medida, url_imagem) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                            (origem_atual, nova_unidade_atual, nome_selecionado, dados_item['categoria'], qtd_envio, dados_item['unidade_medida'], imagem_atual)
+                            (origem_atual, nova_unidade_atual, nome_selecionado, dados_item['categoria'], qtd_envio, medida_atual_item, imagem_atual)
                         )
 
                 execute_db(
@@ -560,9 +565,10 @@ elif menu == "Devolução em Lote":
         
         for _, row in df_pendentes.iterrows():
             col_info, col_conf, col_rev = st.columns([5, 2, 2], vertical_alignment="center")
+            medida_pendente = row.get("unidade_medida") if pd.notna(row.get("unidade_medida")) else "Unidade (un)"
             
             with col_info:
-                st.write(f"📦 **{row['nome_item']}** (Qtd: {row['quantidade']} {row['unidade_medida']})")
+                st.write(f"📦 **{row['nome_item']}** (Qtd: {row['quantidade']} {medida_pendente})")
                 st.caption(f"Destino (Origem): **{row['unidade_origem']}**")
                 
             with col_conf:
