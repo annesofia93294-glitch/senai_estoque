@@ -81,12 +81,14 @@ def init_db():
             cursor.execute("ALTER TABLE estoque_pro ADD COLUMN IF NOT EXISTS unidade_atual TEXT;")
             cursor.execute("ALTER TABLE estoque_pro ADD COLUMN IF NOT EXISTS pendente_devolucao BOOLEAN DEFAULT FALSE;")
             
+            # Atualiza os dados antigos e remove a obrigatoriedade da coluna 'unidade' velha
             cursor.execute("""
                 DO $$ 
                 BEGIN 
                     IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='estoque_pro' and column_name='unidade') THEN
                         UPDATE estoque_pro SET unidade_origem = unidade WHERE unidade_origem IS NULL;
                         UPDATE estoque_pro SET unidade_atual = unidade WHERE unidade_atual IS NULL;
+                        ALTER TABLE estoque_pro ALTER COLUMN unidade DROP NOT NULL;
                     END IF;
                 END $$;
             """)
