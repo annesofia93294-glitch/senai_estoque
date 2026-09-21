@@ -119,10 +119,27 @@ def run_query(query, params=()):
             return pd.DataFrame(data, columns=columns)
 
 def execute_db(query, params=()):
+    """Executa uma query simples isolada."""
     with get_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(query, params)
             conn.commit()
+
+def execute_transaction(queries_params_list):
+    """
+    Executa uma lista de operações no banco juntas.
+    Se UMA falhar, desfaz TODAS as outras (rollback).
+    """
+    with get_connection() as conn:
+        try:
+            with conn.cursor() as cursor:
+                for query, params in queries_params_list:
+                    cursor.execute(query, params)
+            conn.commit()
+            return True, "Sucesso"
+        except Exception as e:
+            conn.rollback()
+            return False, str(e)
 
 def upload_imgbb(imagem_upload):
     try:
@@ -301,7 +318,6 @@ if menu == "Visualizar Estoque":
                     if bg_style:
                         st.markdown("</div>", unsafe_allow_html=True)
 
-                    # --- FORMULÁRIO DE EDIÇÃO E TRANSFERÊNCIA BLINDADO ---
                     if st.session_state.get('editando_id') == item_id:
                         with st.form(key=f"form_edicao_direta_{item_id}", clear_on_submit=False):
                             st.markdown(f"**Editar / Transferir Material #{item_id}: {row['nome_item']}**")
@@ -339,18 +355,25 @@ if menu == "Visualizar Estoque":
                             cancelar_edicao = sub_col2.form_submit_button("Cancelar")
                             
                             if salvar_edicao:
+                                nome_limpo = novo_nome.strip().title() if novo_nome.strip() else "Sem Nome"
+                                transacao_queries = []
+                                
                                 if excluir_check or nova_qtd == 0:
-                                    execute_db("DELETE FROM estoque_pro WHERE id = %s", (item_id,))
-                                    execute_db(
+                                    transacao_queries.append(("DELETE FROM estoque_pro WHERE id = %s", (item_id,)))
+                                    transacao_queries.append((
                                         "INSERT INTO movimentacoes_pro (data_hora, unidade, nome_item, tipo, quantidade, responsavel) VALUES (%s, %s, %s, %s, %s, %s)",
                                         (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), atual, row['nome_item'], "EXCLUSÃO/ZERADO", row['quantidade'], "Responsável Local")
-                                    )
-                                    st.success("Item excluído ou zerado com sucesso.")
+                                    ))
+                                    sucesso, erro = execute_transaction(transacao_queries)
+                                    if sucesso:
+                                        st.success("Item excluído ou zerado com sucesso.")
+                                        st.session_state['editando_id'] = None
+                                        st.rerun()
+                                    else:
+                                        st.error(f"Erro ao excluir: {erro}")
                                 else:
-                                    nome_limpo = novo_nome.strip().title()
-                                    
                                     img_original = row.get('url_imagem')
-                                    url_para_inserir = img_original if pd.notna(img_original) and str(img_original).strip() != "" and str(img_original).lower() != "nan" else None
+                                    url_para_inserir = img_original if pd.notna(img_original) and str(img_original).strip() != "" and str(img_original).lower() != "nan" else ""
                                     
                                     if fazer_transferencia and unidade_destino_transf and qtd_transf > 0:
                                         if qtd_transf > nova_qtd:
@@ -359,12 +382,13 @@ if menu == "Visualizar Estoque":
                                             qtd_restante = nova_qtd - qtd_transf
                                             
                                             if qtd_restante == 0:
-                                                execute_db("DELETE FROM estoque_pro WHERE id = %s", (item_id,))
+                                                transacao_queries.append(("DELETE FROM estoque_pro WHERE id = %s", (item_id,)))
                                             else:
-                                                execute_db("UPDATE estoque_pro SET nome_item = %s, categoria = %s, quantidade = %s, unidade_origem = %s, unidade_medida = %s WHERE id = %s",
-                                                           (nome_limpo, nova_categoria, qtd_restante, nova_origem, nova_medida, item_id))
+                                                transacao_queries.append((
+                                                    "UPDATE estoque_pro SET nome_item = %s, categoria = %s, quantidade = %s, unidade_origem = %s, unidade_medida = %s WHERE id = %s",
+                                                    (nome_limpo, nova_categoria, qtd_restante, nova_origem, nova_medida, item_id)
+                                                ))
                                             
-                                            # CORREÇÃO BLINDADA: Busca exata de destino normalizada
                                             ja_tem_dest = run_query(
                                                 "SELECT id, quantidade FROM estoque_pro WHERE unidade_atual = %s AND LOWER(TRIM(nome_item)) = LOWER(TRIM(%s)) AND unidade_origem = %s", 
                                                 (unidade_destino_transf, nome_limpo, nova_origem)
@@ -372,31 +396,42 @@ if menu == "Visualizar Estoque":
                                             if not ja_tem_dest.empty:
                                                 id_dest = int(ja_tem_dest.iloc[0]["id"])
                                                 nova_q_dest = int(ja_tem_dest.iloc[0]["quantidade"]) + int(qtd_transf)
-                                                execute_db("UPDATE estoque_pro SET quantidade = %s WHERE id = %s", (nova_q_dest, id_dest))
+                                                transacao_queries.append(("UPDATE estoque_pro SET quantidade = %s WHERE id = %s", (nova_q_dest, id_dest)))
                                             else:
-                                                execute_db(
+                                                transacao_queries.append((
                                                     "INSERT INTO estoque_pro (unidade_origem, unidade_atual, nome_item, categoria, quantidade, unidade_medida, url_imagem) VALUES (%s, %s, %s, %s, %s, %s, %s)",
                                                     (nova_origem, unidade_destino_transf, nome_limpo, nova_categoria, qtd_transf, nova_medida, url_para_inserir)
-                                                )
+                                                ))
                                             
-                                            execute_db(
+                                            transacao_queries.append((
                                                 "INSERT INTO movimentacoes_pro (data_hora, unidade, nome_item, tipo, quantidade, responsavel) VALUES (%s, %s, %s, %s, %s, %s)",
                                                 (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), f"{atual} ➔ {unidade_destino_transf}", nome_limpo, "TRANSFERÊNCIA INTEGRADA", qtd_transf, "Responsável Local")
-                                            )
-                                    else:
-                                        if nova_imagem is not None:
-                                            novo_link = upload_imgbb(nova_imagem)
-                                            if novo_link:
-                                                execute_db("UPDATE estoque_pro SET nome_item = %s, categoria = %s, quantidade = %s, unidade_origem = %s, unidade_medida = %s, url_imagem = %s WHERE id = %s",
-                                                           (nome_limpo, nova_categoria, nova_qtd, nova_origem, nova_medida, novo_link, item_id))
-                                        else:
-                                            execute_db("UPDATE estoque_pro SET nome_item = %s, categoria = %s, quantidade = %s, unidade_origem = %s, unidade_medida = %s WHERE id = %s",
-                                                       (nome_limpo, nova_categoria, nova_qtd, nova_origem, nova_medida, item_id))
+                                            ))
                                             
-                                    st.success(f"Atualização e transferência realizada com sucesso! O item já aparece na unidade {unidade_destino_transf if fazer_transferencia else atual}.")
-                                
-                                st.session_state['editando_id'] = None
-                                st.rerun()
+                                            sucesso, erro = execute_transaction(transacao_queries)
+                                            if sucesso:
+                                                st.success(f"Atualização e transferência realizada com sucesso! O item já aparece na unidade {unidade_destino_transf}.")
+                                                st.session_state['editando_id'] = None
+                                                st.rerun()
+                                            else:
+                                                st.error(f"Falha na transferência do banco: {erro}")
+                                    else:
+                                        novo_link = url_para_inserir
+                                        if nova_imagem is not None:
+                                            upload_url = upload_imgbb(nova_imagem)
+                                            if upload_url: novo_link = upload_url
+                                                
+                                        transacao_queries.append((
+                                            "UPDATE estoque_pro SET nome_item = %s, categoria = %s, quantidade = %s, unidade_origem = %s, unidade_medida = %s, url_imagem = %s WHERE id = %s",
+                                            (nome_limpo, nova_categoria, nova_qtd, nova_origem, nova_medida, novo_link, item_id)
+                                        ))
+                                        sucesso, erro = execute_transaction(transacao_queries)
+                                        if sucesso:
+                                            st.success("Atualização salva.")
+                                            st.session_state['editando_id'] = None
+                                            st.rerun()
+                                        else:
+                                            st.error(f"Erro ao salvar atualização: {erro}")
                                 
                             if cancelar_edicao:
                                 st.session_state['editando_id'] = None
@@ -429,34 +464,42 @@ elif menu == "Entrada de Materiais":
             else:
                 data_atual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 
-                url_img = None
+                url_img = ""
                 if imagem_upload is not None:
-                    url_img = upload_imgbb(imagem_upload)
+                    up_link = upload_imgbb(imagem_upload)
+                    if up_link: url_img = up_link
                 
                 item_existente = run_query(
                     "SELECT id, quantidade FROM estoque_pro WHERE unidade_atual = %s AND LOWER(TRIM(nome_item)) = LOWER(TRIM(%s)) AND unidade_origem = %s",
                     (unidade, nome_item, unidade)
                 )
                 
+                transacao_queries = []
+                
                 if not item_existente.empty:
                     item_id = int(item_existente.iloc[0]["id"])
                     nova_qtd = int(item_existente.iloc[0]["quantidade"]) + quantidade
                     
-                    if url_img:
-                        execute_db("UPDATE estoque_pro SET quantidade = %s, url_imagem = %s WHERE id = %s", (nova_qtd, url_img, item_id))
+                    if url_img != "":
+                        transacao_queries.append(("UPDATE estoque_pro SET quantidade = %s, url_imagem = %s WHERE id = %s", (nova_qtd, url_img, item_id)))
                     else:
-                        execute_db("UPDATE estoque_pro SET quantidade = %s WHERE id = %s", (nova_qtd, item_id))
+                        transacao_queries.append(("UPDATE estoque_pro SET quantidade = %s WHERE id = %s", (nova_qtd, item_id)))
                 else:
-                    execute_db(
+                    transacao_queries.append((
                         "INSERT INTO estoque_pro (unidade_origem, unidade_atual, nome_item, categoria, quantidade, unidade_medida, url_imagem) VALUES (%s, %s, %s, %s, %s, %s, %s)",
                         (unidade, unidade, nome_item, categoria, quantidade, un_medida, url_img)
-                    )
+                    ))
                 
-                execute_db(
+                transacao_queries.append((
                     "INSERT INTO movimentacoes_pro (data_hora, unidade, nome_item, tipo, quantidade, responsavel) VALUES (%s, %s, %s, %s, %s, %s)",
                     (data_atual, unidade, nome_item, "ENTRADA", quantidade, "Sistema")
-                )
-                st.success("Entrada registrada com sucesso.")
+                ))
+                
+                sucesso, erro = execute_transaction(transacao_queries)
+                if sucesso:
+                    st.success("Entrada registrada com sucesso.")
+                else:
+                    st.error(f"Falha ao registrar entrada: {erro}")
 
 # --- TELA 3: SAÍDA E EMPRÉSTIMO ---
 elif menu == "Saída / Empréstimo":
@@ -480,7 +523,9 @@ elif menu == "Saída / Empréstimo":
         )
         
         dados_item = itens_disponiveis[itens_disponiveis["id"] == item_id_selecionado].iloc[0]
-        nome_selecionado, qtd_atual, imagem_atual = dados_item["nome_item"], dados_item["quantidade"], dados_item["url_imagem"]
+        nome_selecionado = dados_item["nome_item"]
+        qtd_atual = dados_item["quantidade"]
+        imagem_atual = dados_item["url_imagem"]
         origem_atual = padronizar_unidade(dados_item["unidade_origem"])
         medida_atual_item = dados_item.get("unidade_medida") if pd.notna(dados_item.get("unidade_medida")) else "Unidade (un)"
         
@@ -513,17 +558,24 @@ elif menu == "Saída / Empréstimo":
                     nova_qtd = int(qtd_atual) - int(quantidade_saida)
                     data_atual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     
+                    transacao_queries = []
+                    
                     if nova_qtd == 0:
-                        execute_db("DELETE FROM estoque_pro WHERE id = %s", (item_id_selecionado,))
+                        transacao_queries.append(("DELETE FROM estoque_pro WHERE id = %s", (item_id_selecionado,)))
                     else:
-                        execute_db("UPDATE estoque_pro SET quantidade = %s WHERE id = %s", (nova_qtd, item_id_selecionado))
+                        transacao_queries.append(("UPDATE estoque_pro SET quantidade = %s WHERE id = %s", (nova_qtd, item_id_selecionado)))
                         
-                    execute_db(
+                    transacao_queries.append((
                         "INSERT INTO movimentacoes_pro (data_hora, unidade, nome_item, tipo, quantidade, responsavel) VALUES (%s, %s, %s, %s, %s, %s)",
                         (data_atual, unidade_selecionada, nome_selecionado, "SAÍDA", quantidade_saida, "Responsável Local")
-                    )
-                    st.success("Saída registrada com sucesso.")
-                    st.rerun()
+                    ))
+                    
+                    sucesso, erro = execute_transaction(transacao_queries)
+                    if sucesso:
+                        st.success("Saída registrada com sucesso.")
+                        st.rerun()
+                    else:
+                        st.error(f"Falha ao dar saída: {erro}")
 
         elif acao == "Empréstimo / Enviar para Outra Unidade":
             unidades_destino = [u for u in UNIDADES_PADRAO if u != unidade_selecionada]
@@ -534,36 +586,45 @@ elif menu == "Saída / Empréstimo":
                 data_atual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 
                 img_original_envio = dados_item.get('url_imagem')
-                url_para_inserir_envio = img_original_envio if pd.notna(img_original_envio) and str(img_original_envio).strip() != "" and str(img_original_envio).lower() != "nan" else None
+                url_para_inserir_envio = img_original_envio if pd.notna(img_original_envio) and str(img_original_envio).strip() != "" and str(img_original_envio).lower() != "nan" else ""
+                
+                nome_seguro = nome_selecionado if nome_selecionado else "Sem Nome"
+                cat_segura = dados_item['categoria'] if dados_item['categoria'] else "Geral"
+                
+                transacao_queries = []
                 
                 if qtd_envio == qtd_atual:
-                    execute_db("UPDATE estoque_pro SET unidade_atual = %s WHERE id = %s", (nova_unidade_atual, item_id_selecionado))
+                    transacao_queries.append(("UPDATE estoque_pro SET unidade_atual = %s WHERE id = %s", (nova_unidade_atual, item_id_selecionado)))
                 else:
                     nova_qtd_origem = int(qtd_atual) - int(qtd_envio)
-                    execute_db("UPDATE estoque_pro SET quantidade = %s WHERE id = %s", (nova_qtd_origem, item_id_selecionado))
+                    transacao_queries.append(("UPDATE estoque_pro SET quantidade = %s WHERE id = %s", (nova_qtd_origem, item_id_selecionado)))
                     
-                    # CORREÇÃO BLINDADA: Busca exata no destino considerando origem e nome normalizados
                     ja_tem = run_query(
                         "SELECT id, quantidade FROM estoque_pro WHERE unidade_atual = %s AND LOWER(TRIM(nome_item)) = LOWER(TRIM(%s)) AND unidade_origem = %s", 
-                        (nova_unidade_atual, nome_selecionado, origem_atual)
+                        (nova_unidade_atual, nome_seguro, origem_atual)
                     )
+                    
                     if not ja_tem.empty:
                         id_destino = int(ja_tem.iloc[0]["id"])
                         q_nova = int(ja_tem.iloc[0]["quantidade"]) + int(qtd_envio)
-                        execute_db("UPDATE estoque_pro SET quantidade = %s WHERE id = %s", (q_nova, id_destino))
+                        transacao_queries.append(("UPDATE estoque_pro SET quantidade = %s WHERE id = %s", (q_nova, id_destino)))
                     else:
-                        execute_db(
+                        transacao_queries.append((
                             "INSERT INTO estoque_pro (unidade_origem, unidade_atual, nome_item, categoria, quantidade, unidade_medida, url_imagem) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                            (origem_atual, nova_unidade_atual, nome_selecionado, dados_item['categoria'], qtd_envio, medida_atual_item, url_para_inserir_envio)
-                        )
+                            (origem_atual, nova_unidade_atual, nome_seguro, cat_segura, qtd_envio, medida_atual_item, url_para_inserir_envio)
+                        ))
 
-                # REGISTRO GARANTIDO NO HISTÓRICO
-                execute_db(
+                transacao_queries.append((
                     "INSERT INTO movimentacoes_pro (data_hora, unidade, nome_item, tipo, quantidade, responsavel) VALUES (%s, %s, %s, %s, %s, %s)",
-                    (data_atual, f"{unidade_selecionada} ➔ {nova_unidade_atual}", nome_selecionado, "EMPRÉSTIMO/TRANSFERÊNCIA", qtd_envio, "Responsável Local")
-                )
-                st.success(f"Material transferido com sucesso para {nova_unidade_atual}! Já aparece no estoque de destino e no histórico.")
-                st.rerun()
+                    (data_atual, f"{unidade_selecionada} ➔ {nova_unidade_atual}", nome_seguro, "EMPRÉSTIMO/TRANSFERÊNCIA", qtd_envio, "Responsável Local")
+                ))
+                
+                sucesso, erro = execute_transaction(transacao_queries)
+                if sucesso:
+                    st.success(f"Material transferido com sucesso para {nova_unidade_atual}! Já aparece no estoque de destino e no histórico.")
+                    st.rerun()
+                else:
+                    st.error(f"Falha na transferência: {erro}")
 
 # --- TELA 4: FILA E CONFIRMAÇÃO DE DEVOLUÇÕES ---
 elif menu == "Devolução em Lote":
@@ -589,13 +650,17 @@ elif menu == "Devolução em Lote":
                 
             with col_conf:
                 if st.button("✅ Confirmar Devolução", key=f"conf_{row['id']}", use_container_width=True):
-                    execute_db("UPDATE estoque_pro SET unidade_atual = %s, pendente_devolucao = FALSE WHERE id = %s", (row['unidade_origem'], row['id']))
-                    execute_db(
-                        "INSERT INTO movimentacoes_pro (data_hora, unidade, nome_item, tipo, quantidade, responsavel) VALUES (%s, %s, %s, %s, %s, %s)",
-                        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), f"{unidade_atual_filtro} ➔ {row['unidade_origem']}", row['nome_item'], "DEVOLUÇÃO", row['quantidade'], "Responsável Local")
-                    )
-                    st.success(f"{row['nome_item']} devolvido e retirado do seu estoque!")
-                    st.rerun()
+                    transacao_queries = [
+                        ("UPDATE estoque_pro SET unidade_atual = %s, pendente_devolucao = FALSE WHERE id = %s", (row['unidade_origem'], row['id'])),
+                        ("INSERT INTO movimentacoes_pro (data_hora, unidade, nome_item, tipo, quantidade, responsavel) VALUES (%s, %s, %s, %s, %s, %s)",
+                         (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), f"{unidade_atual_filtro} ➔ {row['unidade_origem']}", row['nome_item'], "DEVOLUÇÃO", row['quantidade'], "Responsável Local"))
+                    ]
+                    sucesso, erro = execute_transaction(transacao_queries)
+                    if sucesso:
+                        st.success(f"{row['nome_item']} devolvido e retirado do seu estoque!")
+                        st.rerun()
+                    else:
+                        st.error(f"Erro ao confirmar devolução: {erro}")
                     
             with col_rev:
                 if st.button("❌ Reverter/Desfazer", key=f"rev_{row['id']}", use_container_width=True, help="Tira o item da fila de devolução e mantém na sua unidade"):
