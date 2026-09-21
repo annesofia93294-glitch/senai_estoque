@@ -19,7 +19,6 @@ st.markdown("""
     <style>
     .main { background-color: #f8f9fa; }
     
-    /* Estilização da Barra Lateral com Azul SENAI */
     [data-testid="stSidebar"] {
         background-color: #004a87;
         color: white;
@@ -30,7 +29,6 @@ st.markdown("""
         color: white !important;
     }
     
-    /* Botões principais */
     .stButton>button {
         background-color: #004a87;
         color: white;
@@ -55,7 +53,6 @@ def get_connection():
 def init_db():
     with get_connection() as conn:
         with conn.cursor() as cursor:
-            # Criação da tabela principal com suporte à fila de devolução
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS estoque_pro (
                     id SERIAL PRIMARY KEY,
@@ -70,7 +67,6 @@ def init_db():
                 )
             """)
             
-            # Garantir colunas caso a tabela seja de versão anterior
             cursor.execute("ALTER TABLE estoque_pro ADD COLUMN IF NOT EXISTS unidade_origem TEXT;")
             cursor.execute("ALTER TABLE estoque_pro ADD COLUMN IF NOT EXISTS unidade_atual TEXT;")
             cursor.execute("ALTER TABLE estoque_pro ADD COLUMN IF NOT EXISTS pendente_devolucao BOOLEAN DEFAULT FALSE;")
@@ -104,7 +100,6 @@ with st.spinner("Inicializando o sistema e conectando ao banco de dados..."):
     except Exception as e:
         st.error(f"Erro ao inicializar o banco de dados: {e}")
 
-@st.cache_data(ttl=300)
 def run_query(query, params=()):
     with get_connection() as conn:
         with conn.cursor() as cursor:
@@ -118,7 +113,6 @@ def execute_db(query, params=()):
         with conn.cursor() as cursor:
             cursor.execute(query, params)
             conn.commit()
-    st.cache_data.clear() 
 
 def upload_imgbb(imagem_upload):
     try:
@@ -167,7 +161,7 @@ CATEGORIAS_PADRAO = [
     "Ferramentas de Medição", "Ferramentas Elétricas", "Kits Didáticos", "EPIs"
 ]
 
-# --- TELA 1: CONSULTA DE ESTOQUE COM EDIÇÃO AUDITADA E FILA DE DEVOLUÇÃO ---
+# --- TELA 1: CONSULTA DE ESTOQUE ---
 if menu == "Visualizar Estoque":
     st.subheader("Catálogo Geral de Materiais e Conferência")
     
@@ -180,14 +174,14 @@ if menu == "Visualizar Estoque":
     if filtro_unidade == "Selecione uma Unidade":
         st.info("Por favor, selecione uma unidade no filtro acima para carregar os itens correspondentes.")
     else:
-        query = "SELECT id, unidade_origem, unidade_atual, nome_item, categoria, quantidade, unidade_medida, url_imagem, pendente_devolucao FROM estoque_pro WHERE unidade_atual = %s"
+        query = "SELECT id, unidade_origem, unidade_atual, nome_item, categoria, quantidade, unidade_medida, url_imagem, pendente_devolucao FROM estoque_pro WHERE unidade_atual = %s ORDER BY id DESC"
         params = [filtro_unidade]
         
         if filtro_categoria != "Todas":
             query += " AND categoria = %s"
             params.append(filtro_categoria)
             
-        with st.spinner("Carregando estoque..."):
+        with st.spinner("Carregando estoque atualizado..."):
             df_estoque = run_query(query, tuple(params))
         
         if not df_estoque.empty:
@@ -206,7 +200,6 @@ if menu == "Visualizar Estoque":
                     <span style="font-size:22px; font-weight:bold; color:#004a87;">{df_estoque['categoria'].nunique()}</span></div>""", unsafe_allow_html=True)
             
             st.markdown("<br>", unsafe_allow_html=True)
-            st.markdown("**Lista de Materiais:** Marque a caixinha à esquerda para destacar o item em azul e facilitar sua conferência visual.")
             
             if 'marcados_visualizacao' not in st.session_state:
                 st.session_state['marcados_visualizacao'] = {}
@@ -227,10 +220,17 @@ if menu == "Visualizar Estoque":
             for _, row in df_estoque.iterrows():
                 item_id = row['id']
                 esta_marcado = st.session_state['marcados_visualizacao'].get(item_id, False)
-                bg_style = "background-color: #eef4fb; padding: 6px; border-radius: 6px;" if esta_marcado else ""
+                is_pendente = row.get("pendente_devolucao", False)
+                
+                if is_pendente:
+                    bg_style = "background-color: #fff3cd; padding: 6px; border-radius: 6px; border-left: 4px solid #ffc107;"
+                elif esta_marcado:
+                    bg_style = "background-color: #eef4fb; padding: 6px; border-radius: 6px;"
+                else:
+                    bg_style = ""
                 
                 with st.container():
-                    if esta_marcado:
+                    if bg_style:
                         st.markdown(f"<div style='{bg_style}'>", unsafe_allow_html=True)
 
                     c_chk, c_cod, c_img, c_desc, c_cat, c_loc, c_qtd, c_acao = st.columns([1, 1, 2, 3, 2, 2, 2, 2], vertical_alignment="center")
@@ -251,7 +251,11 @@ if menu == "Visualizar Estoque":
                     else:
                         c_img.caption("Sem foto")
                         
-                    c_desc.write(row["nome_item"])
+                    if is_pendente:
+                        c_desc.markdown(f"**{row['nome_item']}** <br><span style='color:#d35400; font-size:12px; font-weight:bold;'>⏳ Na fila de devolução</span>", unsafe_allow_html=True)
+                    else:
+                        c_desc.write(row["nome_item"])
+                        
                     c_cat.write(row["categoria"])
                     
                     origem = row.get("unidade_origem", "Desconhecida")
@@ -274,31 +278,39 @@ if menu == "Visualizar Estoque":
                             st.rerun()
                     with col_btn2:
                         if origem != atual:
-                            if not row.get("pendente_devolucao", False):
+                            if not is_pendente:
                                 if st.button("📦", key=f"btn_fila_{item_id}", help="Enviar para a Fila de Devolução"):
                                     execute_db("UPDATE estoque_pro SET pendente_devolucao = TRUE WHERE id = %s", (item_id,))
-                                    st.toast("Item enviado para a aba de Devolução!")
+                                    st.toast("Adicionado à fila de devolução!")
                                     st.rerun()
                             else:
-                                st.button("⏳ Na Fila", key=f"btn_fila_dis_{item_id}", disabled=True)
+                                st.button("⏳", key=f"btn_fila_dis_{item_id}", disabled=True, help="Já aguardando na fila")
 
-                    if esta_marcado:
+                    if bg_style:
                         st.markdown("</div>", unsafe_allow_html=True)
 
                     if st.session_state.get('editando_id') == item_id:
                         with st.form(key=f"form_edicao_direta_{item_id}", clear_on_submit=False):
                             st.markdown(f"**Editando Material #{item_id}: {row['nome_item']}**")
+                            
                             e_col1, e_col2, e_col3 = st.columns(3)
                             with e_col1:
                                 novo_nome = st.text_input("Nome do Material", value=row['nome_item'])
                                 nova_categoria = st.selectbox("Categoria", CATEGORIAS_PADRAO, index=CATEGORIAS_PADRAO.index(row['categoria']) if row['categoria'] in CATEGORIAS_PADRAO else 0)
                             with e_col2:
-                                nova_qtd = st.number_input("Quantidade", min_value=0, value=int(row['quantidade']), step=1)
+                                nova_qtd = st.number_input("Quantidade Total", min_value=0, value=int(row['quantidade']), step=1)
                                 idx_origem = UNIDADES_PADRAO.index(origem) if origem in UNIDADES_PADRAO else 0
-                                nova_origem = st.selectbox("Unidade Proprietária (Origem)", UNIDADES_PADRAO, index=idx_origem)
+                                nova_origem = st.selectbox("Unidade Proprietária (Dono)", UNIDADES_PADRAO, index=idx_origem)
                             with e_col3:
+                                # NOVIDADE: Permite mudar o local físico direto da edição se necessário
+                                idx_atual = UNIDADES_PADRAO.index(atual) if atual in UNIDADES_PADRAO else 0
+                                nova_atual = st.selectbox("Localização Física (Onde está)", UNIDADES_PADRAO, index=idx_atual)
                                 nova_imagem = st.file_uploader("Alterar Foto (Opcional)", type=["png", "jpg", "jpeg"], key=f"up_{item_id}")
-                                excluir_check = st.checkbox("Excluir este item permanentemente")
+                            
+                            # AVISO IMPORTANTE PARA EVITAR O ERRO DE TRANSFERÊNCIA DE LOTE QUE VOCÊ SOFREU
+                            st.info("⚠️ **Atenção:** Alterar a quantidade aqui cria uma 'Baixa/Entrada Manual' no histórico. Para **transferir parte dessa quantidade** para outra unidade, cancele a edição e use a aba lateral **'Saída / Empréstimo'**.")
+                            
+                            excluir_check = st.checkbox("Excluir este lote permanentemente do banco de dados")
                             
                             sub_col1, sub_col2 = st.columns(2)
                             salvar_edicao = sub_col1.form_submit_button("Salvar Alterações")
@@ -319,19 +331,27 @@ if menu == "Visualizar Estoque":
                                     if nova_imagem is not None:
                                         novo_link = upload_imgbb(nova_imagem)
                                         if novo_link:
-                                            execute_db("UPDATE estoque_pro SET nome_item = %s, categoria = %s, quantidade = %s, unidade_origem = %s, url_imagem = %s WHERE id = %s",
-                                                       (novo_nome.strip().title(), nova_categoria, nova_qtd, nova_origem, novo_link, item_id))
+                                            execute_db("UPDATE estoque_pro SET nome_item = %s, categoria = %s, quantidade = %s, unidade_origem = %s, unidade_atual = %s, url_imagem = %s WHERE id = %s",
+                                                       (novo_nome.strip().title(), nova_categoria, nova_qtd, nova_origem, nova_atual, novo_link, item_id))
                                     else:
-                                        execute_db("UPDATE estoque_pro SET nome_item = %s, categoria = %s, quantidade = %s, unidade_origem = %s WHERE id = %s",
-                                                   (novo_nome.strip().title(), nova_categoria, nova_qtd, nova_origem, item_id))
+                                        execute_db("UPDATE estoque_pro SET nome_item = %s, categoria = %s, quantidade = %s, unidade_origem = %s, unidade_atual = %s WHERE id = %s",
+                                                   (novo_nome.strip().title(), nova_categoria, nova_qtd, nova_origem, nova_atual, item_id))
                                     
-                                    # REGISTRA AUDITORIA DE ALTERAÇÕES DE QUANTIDADE
+                                    # Registra alteração de quantidade
                                     if diff != 0:
                                         tipo_mov = "AJUSTE (ENTRADA MANUAL)" if diff > 0 else "AJUSTE (PERDA/SAÍDA MANUAL)"
                                         execute_db(
                                             "INSERT INTO movimentacoes_pro (data_hora, unidade, nome_item, tipo, quantidade, responsavel) VALUES (%s, %s, %s, %s, %s, %s)",
                                             (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), atual, row['nome_item'], tipo_mov, abs(diff), "Correção de Edição")
                                         )
+                                        
+                                    # Registra alteração direta de unidade (Moveu todo o lote)
+                                    if nova_atual != atual:
+                                        execute_db(
+                                            "INSERT INTO movimentacoes_pro (data_hora, unidade, nome_item, tipo, quantidade, responsavel) VALUES (%s, %s, %s, %s, %s, %s)",
+                                            (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), f"{atual} -> {nova_atual}", row['nome_item'], "TRANSFERÊNCIA DIRETA", nova_qtd, "Correção de Edição")
+                                        )
+                                        
                                     st.success("Alterações salvas com sucesso!")
                                 
                                 st.session_state['editando_id'] = None
@@ -373,8 +393,8 @@ elif menu == "Entrada de Materiais":
                     url_img = upload_imgbb(imagem_upload)
                 
                 item_existente = run_query(
-                    "SELECT id, quantidade FROM estoque_pro WHERE unidade_atual = %s AND nome_item = %s",
-                    (unidade, nome_item)
+                    "SELECT id, quantidade FROM estoque_pro WHERE unidade_atual = %s AND nome_item = %s AND unidade_origem = %s",
+                    (unidade, nome_item, unidade)
                 )
                 
                 if not item_existente.empty:
@@ -466,7 +486,7 @@ elif menu == "Saída / Empréstimo":
         elif acao == "Empréstimo / Enviar para Outra Unidade":
             unidades_destino = [u for u in UNIDADES_PADRAO if u != unidade_selecionada]
             nova_unidade_atual = st.selectbox("Enviar para qual Unidade?", unidades_destino)
-            qtd_envio = st.number_input("Quantidade a Enviar por Empréstimo", min_value=1, max_value=int(qtd_atual) if qtd_atual > 0 else 1, step=1)
+            qtd_envio = st.number_input("Quantidade a Enviar por Empréstimo/Transferência", min_value=1, max_value=int(qtd_atual) if qtd_atual > 0 else 1, step=1)
             
             if st.button("Confirmar Envio / Empréstimo"):
                 data_atual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -477,7 +497,8 @@ elif menu == "Saída / Empréstimo":
                     nova_qtd_origem = int(qtd_atual) - int(qtd_envio)
                     execute_db("UPDATE estoque_pro SET quantidade = %s WHERE id = %s", (nova_qtd_origem, item_id_selecionado))
                     
-                    ja_tem = run_query("SELECT id, quantidade FROM estoque_pro WHERE unidade_atual = %s AND nome_item = %s", (nova_unidade_atual, nome_selecionado))
+                    # Correção: O agrupamento na nova unidade agora considera também quem é o dono real (origem)
+                    ja_tem = run_query("SELECT id, quantidade FROM estoque_pro WHERE unidade_atual = %s AND nome_item = %s AND unidade_origem = %s", (nova_unidade_atual, nome_selecionado, origem_atual))
                     if not ja_tem.empty:
                         id_destino = int(ja_tem.iloc[0]["id"])
                         q_nova = int(ja_tem.iloc[0]["quantidade"]) + int(qtd_envio)
@@ -495,14 +516,13 @@ elif menu == "Saída / Empréstimo":
                 st.success(f"Material transferido com sucesso para {nova_unidade_atual}.")
                 st.rerun()
 
-# --- TELA 4: FILA E CONFIRMAÇÃO DE DEVOLUÇÕES (COM OPÇÃO DE REVERTER) ---
+# --- TELA 4: FILA E CONFIRMAÇÃO DE DEVOLUÇÕES ---
 elif menu == "Devolução em Lote":
     st.subheader("Fila de Devolução de Materiais")
-    st.markdown("Confirme a devolução dos itens que foram enviados para esta fila ou reverta envios acidentais.")
+    st.markdown("Confirme a devolução final dos itens que foram enviados para esta fila ou reverta envios acidentais.")
     
     unidade_atual_filtro = st.selectbox("Selecione a Unidade atual", UNIDADES_PADRAO)
     
-    # Busca APENAS itens marcados com pendente_devolucao = TRUE
     query_pendentes = "SELECT id, unidade_origem, unidade_atual, nome_item, categoria, quantidade, unidade_medida FROM estoque_pro WHERE pendente_devolucao = TRUE AND unidade_atual = %s"
     df_pendentes = run_query(query_pendentes, (unidade_atual_filtro,))
     
@@ -515,22 +535,22 @@ elif menu == "Devolução em Lote":
             
             with col_info:
                 st.write(f"📦 **{row['nome_item']}** (Qtd: {row['quantidade']} {row['unidade_medida']})")
-                st.caption(f"Destino: **{row['unidade_origem']}**")
+                st.caption(f"Destino (Origem): **{row['unidade_origem']}**")
                 
             with col_conf:
-                if st.button("✅ Confirmar", key=f"conf_{row['id']}", use_container_width=True):
+                if st.button("✅ Confirmar Devolução", key=f"conf_{row['id']}", use_container_width=True):
                     execute_db("UPDATE estoque_pro SET unidade_atual = %s, pendente_devolucao = FALSE WHERE id = %s", (row['unidade_origem'], row['id']))
                     execute_db(
                         "INSERT INTO movimentacoes_pro (data_hora, unidade, nome_item, tipo, quantidade, responsavel) VALUES (%s, %s, %s, %s, %s, %s)",
                         (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), f"{unidade_atual_filtro} ➔ {row['unidade_origem']}", row['nome_item'], "DEVOLUÇÃO", row['quantidade'], "Responsável Local")
                     )
-                    st.success(f"{row['nome_item']} devolvido!")
+                    st.success(f"{row['nome_item']} devolvido e retirado do seu estoque!")
                     st.rerun()
                     
             with col_rev:
-                if st.button("❌ Reverter", key=f"rev_{row['id']}", use_container_width=True, help="Tira o item da fila de devolução sem alterar seu local"):
+                if st.button("❌ Reverter/Desfazer", key=f"rev_{row['id']}", use_container_width=True, help="Tira o item da fila de devolução e mantém na sua unidade"):
                     execute_db("UPDATE estoque_pro SET pendente_devolucao = FALSE WHERE id = %s", (row['id'],))
-                    st.toast("Envio cancelado com sucesso.")
+                    st.toast("Envio cancelado com sucesso. Item continua livre na sua lista principal.")
                     st.rerun()
             st.divider()
     else:
