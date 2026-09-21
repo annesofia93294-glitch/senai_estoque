@@ -55,6 +55,7 @@ def get_connection():
 def init_db():
     with get_connection() as conn:
         with conn.cursor() as cursor:
+            # Criação da tabela principal com as colunas corretas
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS estoque_pro (
                     id SERIAL PRIMARY KEY,
@@ -67,6 +68,8 @@ def init_db():
                     url_imagem TEXT
                 )
             """)
+            
+            # Garantir colunas caso a tabela seja de versão anterior
             cursor.execute("ALTER TABLE estoque_pro ADD COLUMN IF NOT EXISTS unidade_origem TEXT;")
             cursor.execute("ALTER TABLE estoque_pro ADD COLUMN IF NOT EXISTS unidade_atual TEXT;")
             
@@ -203,7 +206,6 @@ if menu == "Visualizar Estoque":
             st.markdown("<br>", unsafe_allow_html=True)
             st.markdown("**Lista de Materiais:** Marque a caixinha à esquerda para destacar o item em azul e facilitar sua conferência visual.")
             
-            # Inicializa estados na sessão se não existirem
             if 'marcados_visualizacao' not in st.session_state:
                 st.session_state['marcados_visualizacao'] = {}
             if 'editando_id' not in st.session_state:
@@ -222,8 +224,6 @@ if menu == "Visualizar Estoque":
 
             for _, row in df_estoque.iterrows():
                 item_id = row['id']
-                
-                # Verifica se está marcado para pintar a linha de fundo em azul claro
                 esta_marcado = st.session_state['marcados_visualizacao'].get(item_id, False)
                 bg_style = "background-color: #eef4fb; padding: 6px; border-radius: 6px;" if esta_marcado else ""
                 
@@ -233,7 +233,6 @@ if menu == "Visualizar Estoque":
 
                     c_chk, c_cod, c_img, c_desc, c_cat, c_loc, c_qtd, c_acao = st.columns([1, 1, 2, 3, 2, 2, 2, 2], vertical_alignment="center")
                     
-                    # Checkbox de marcação estética para não se perder
                     marcado = c_chk.checkbox("", value=esta_marcado, key=f"marcar_{item_id}")
                     if marcado != esta_marcado:
                         st.session_state['marcados_visualizacao'][item_id] = marcado
@@ -263,7 +262,6 @@ if menu == "Visualizar Estoque":
                     
                     c_qtd.write(f"**{row['quantidade']}** {row['unidade_medida']}")
                     
-                    # Botões de Ação na Linha
                     col_btn1, col_btn2 = c_acao.columns(2)
                     with col_btn1:
                         if st.button("✏️", key=f"btn_edit_{item_id}", help="Editar item diretamente"):
@@ -273,7 +271,6 @@ if menu == "Visualizar Estoque":
                                 st.session_state['editando_id'] = item_id
                             st.rerun()
                     with col_btn2:
-                        # Se estiver emprestado, botão para devolver direto para a origem
                         if origem != atual:
                             if st.button("↩️", key=f"btn_dev_{item_id}", help=f"Devolver para {origem}"):
                                 execute_db("UPDATE estoque_pro SET unidade_atual = %s WHERE id = %s", (origem, item_id))
@@ -287,7 +284,6 @@ if menu == "Visualizar Estoque":
                     if esta_marcado:
                         st.markdown("</div>", unsafe_allow_html=True)
 
-                    # --- FORMULÁRIO DE EDIÇÃO INTEGRADO LOGO ABAIXO DO ITEM SELECIONADO ---
                     if st.session_state.get('editando_id') == item_id:
                         with st.form(key=f"form_edicao_direta_{item_id}", clear_on_submit=False):
                             st.markdown(f"**Editando Material #{item_id}: {row['nome_item']}**")
