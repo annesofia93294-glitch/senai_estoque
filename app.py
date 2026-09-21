@@ -50,6 +50,16 @@ DB_URL = st.secrets["DB_URL"]
 def get_connection():
     return psycopg2.connect(DB_URL)
 
+def padronizar_unidade(nome_unidade):
+    if not nome_unidade:
+        return "Almoxarifado Central"
+    n = str(nome_unidade).strip().title()
+    if "Luiz" in n or "Luis" in n or "Eduardo" in n:
+        return "SENAI Luis Eduardo"
+    if "Barreiras" in n:
+        return "SENAI Barreiras"
+    return n
+
 def init_db():
     with get_connection() as conn:
         with conn.cursor() as cursor:
@@ -174,8 +184,9 @@ if menu == "Visualizar Estoque":
     if filtro_unidade == "Selecione uma Unidade":
         st.info("Por favor, selecione uma unidade no filtro acima para carregar os itens correspondentes.")
     else:
+        unidade_filtro_padrao = padronizar_unidade(filtro_unidade)
         query = "SELECT id, unidade_origem, unidade_atual, nome_item, categoria, quantidade, unidade_medida, url_imagem, pendente_devolucao FROM estoque_pro WHERE unidade_atual = %s ORDER BY id DESC"
-        params = [filtro_unidade]
+        params = [unidade_filtro_padrao]
         
         if filtro_categoria != "Todas":
             query += " AND categoria = %s"
@@ -258,8 +269,8 @@ if menu == "Visualizar Estoque":
                         
                     c_cat.write(row["categoria"])
                     
-                    origem = row.get("unidade_origem", "Desconhecida")
-                    atual = row.get("unidade_atual", "Desconhecida")
+                    origem = padronizar_unidade(row.get("unidade_origem", "Desconhecida"))
+                    atual = padronizar_unidade(row.get("unidade_atual", "Desconhecida"))
                     
                     if origem != atual:
                         c_loc.markdown(f"**{atual}**<br><span style='color:#c0392b; font-size:11px;'>Origem: {origem}</span>", unsafe_allow_html=True)
@@ -302,7 +313,7 @@ if menu == "Visualizar Estoque":
                                 nova_qtd = st.number_input("Quantidade Total", min_value=0, value=int(row['quantidade']), step=1)
                             with e_col2:
                                 idx_origem = UNIDADES_PADRAO.index(origem) if origem in UNIDADES_PADRAO else 0
-                                nova_origem = st.selectbox("Unidade Proprietária (Dono)", UNIDADES_PADRAO, index=idx_origem)
+                                nova_origem = padronizar_unidade(st.selectbox("Unidade Proprietária (Dono)", UNIDADES_PADRAO, index=idx_origem))
                                 
                                 unidades_medida_lista = ["Unidade (un)", "Metros (m)", "Quilogramas (kg)", "Litros (L)", "Caixa (cx)"]
                                 medida_atual_idx = unidades_medida_lista.index(row['unidade_medida']) if row.get('unidade_medida') in unidades_medida_lista else 0
@@ -318,7 +329,7 @@ if menu == "Visualizar Estoque":
                             qtd_transf = 0
                             if fazer_transferencia:
                                 unidades_possiveis = [u for u in UNIDADES_PADRAO if u != atual]
-                                unidade_destino_transf = st.selectbox("Unidade de Destino", unidades_possiveis)
+                                unidade_destino_transf = padronizar_unidade(st.selectbox("Unidade de Destino", unidades_possiveis))
                                 qtd_transf = st.number_input("Quantidade a Enviar", min_value=1, max_value=int(nova_qtd) if nova_qtd > 0 else 1, value=1, step=1)
 
                             excluir_check = st.checkbox("Excluir este lote permanentemente do banco de dados")
@@ -338,7 +349,6 @@ if menu == "Visualizar Estoque":
                                 else:
                                     nome_limpo = novo_nome.strip().title()
                                     
-                                    # Tratamento seguro da URL da imagem
                                     img_original = row.get('url_imagem')
                                     url_para_inserir = img_original if pd.notna(img_original) and str(img_original).strip() != "" and str(img_original).lower() != "nan" else None
                                     
@@ -354,6 +364,7 @@ if menu == "Visualizar Estoque":
                                                 execute_db("UPDATE estoque_pro SET nome_item = %s, categoria = %s, quantidade = %s, unidade_origem = %s, unidade_medida = %s WHERE id = %s",
                                                            (nome_limpo, nova_categoria, qtd_restante, nova_origem, nova_medida, item_id))
                                             
+                                            # CORREÇÃO BLINDADA: Busca exata de destino normalizada
                                             ja_tem_dest = run_query(
                                                 "SELECT id, quantidade FROM estoque_pro WHERE unidade_atual = %s AND LOWER(TRIM(nome_item)) = LOWER(TRIM(%s)) AND unidade_origem = %s", 
                                                 (unidade_destino_transf, nome_limpo, nova_origem)
@@ -370,7 +381,7 @@ if menu == "Visualizar Estoque":
                                             
                                             execute_db(
                                                 "INSERT INTO movimentacoes_pro (data_hora, unidade, nome_item, tipo, quantidade, responsavel) VALUES (%s, %s, %s, %s, %s, %s)",
-                                                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), f"{atual} -> {unidade_destino_transf}", nome_limpo, "TRANSFERÊNCIA INTEGRADA", qtd_transf, "Responsável Local")
+                                                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), f"{atual} ➔ {unidade_destino_transf}", nome_limpo, "TRANSFERÊNCIA INTEGRADA", qtd_transf, "Responsável Local")
                                             )
                                     else:
                                         if nova_imagem is not None:
@@ -382,7 +393,7 @@ if menu == "Visualizar Estoque":
                                             execute_db("UPDATE estoque_pro SET nome_item = %s, categoria = %s, quantidade = %s, unidade_origem = %s, unidade_medida = %s WHERE id = %s",
                                                        (nome_limpo, nova_categoria, nova_qtd, nova_origem, nova_medida, item_id))
                                             
-                                    st.success("Atualização realizada com sucesso!")
+                                    st.success(f"Atualização e transferência realizada com sucesso! O item já aparece na unidade {unidade_destino_transf if fazer_transferencia else atual}.")
                                 
                                 st.session_state['editando_id'] = None
                                 st.rerun()
@@ -402,7 +413,7 @@ elif menu == "Entrada de Materiais":
     with st.form("form_entrada", clear_on_submit=False):
         col_a, col_b = st.columns(2)
         with col_a:
-            unidade = st.selectbox("Unidade Destino / Proprietária", UNIDADES_PADRAO)
+            unidade = padronizar_unidade(st.selectbox("Unidade Destino / Proprietária", UNIDADES_PADRAO))
             nome_item = st.text_input("Nome do Material / Equipamento").strip().title()
             categoria = st.selectbox("Categoria", CATEGORIAS_PADRAO)
         with col_b:
@@ -451,7 +462,7 @@ elif menu == "Entrada de Materiais":
 elif menu == "Saída / Empréstimo":
     st.subheader("Baixa de Materiais e Empréstimo entre Unidades")
     
-    unidade_selecionada = st.selectbox("Selecione a Unidade onde o material está fisicamente", UNIDADES_PADRAO)
+    unidade_selecionada = padronizar_unidade(st.selectbox("Selecione a Unidade onde o material está fisicamente", UNIDADES_PADRAO))
     
     with st.spinner("Buscando itens da unidade..."):
         itens_disponiveis = run_query(
@@ -470,7 +481,7 @@ elif menu == "Saída / Empréstimo":
         
         dados_item = itens_disponiveis[itens_disponiveis["id"] == item_id_selecionado].iloc[0]
         nome_selecionado, qtd_atual, imagem_atual = dados_item["nome_item"], dados_item["quantidade"], dados_item["url_imagem"]
-        origem_atual = dados_item["unidade_origem"]
+        origem_atual = padronizar_unidade(dados_item["unidade_origem"])
         medida_atual_item = dados_item.get("unidade_medida") if pd.notna(dados_item.get("unidade_medida")) else "Unidade (un)"
         
         col_img, col_info = st.columns([1, 2])
@@ -516,7 +527,7 @@ elif menu == "Saída / Empréstimo":
 
         elif acao == "Empréstimo / Enviar para Outra Unidade":
             unidades_destino = [u for u in UNIDADES_PADRAO if u != unidade_selecionada]
-            nova_unidade_atual = st.selectbox("Enviar para qual Unidade?", unidades_destino)
+            nova_unidade_atual = padronizar_unidade(st.selectbox("Enviar para qual Unidade?", unidades_destino))
             qtd_envio = st.number_input("Quantidade a Enviar por Empréstimo/Transferência", min_value=1, max_value=int(qtd_atual) if qtd_atual > 0 else 1, step=1)
             
             if st.button("Confirmar Envio / Empréstimo"):
@@ -531,6 +542,7 @@ elif menu == "Saída / Empréstimo":
                     nova_qtd_origem = int(qtd_atual) - int(qtd_envio)
                     execute_db("UPDATE estoque_pro SET quantidade = %s WHERE id = %s", (nova_qtd_origem, item_id_selecionado))
                     
+                    # CORREÇÃO BLINDADA: Busca exata no destino considerando origem e nome normalizados
                     ja_tem = run_query(
                         "SELECT id, quantidade FROM estoque_pro WHERE unidade_atual = %s AND LOWER(TRIM(nome_item)) = LOWER(TRIM(%s)) AND unidade_origem = %s", 
                         (nova_unidade_atual, nome_selecionado, origem_atual)
@@ -545,11 +557,12 @@ elif menu == "Saída / Empréstimo":
                             (origem_atual, nova_unidade_atual, nome_selecionado, dados_item['categoria'], qtd_envio, medida_atual_item, url_para_inserir_envio)
                         )
 
+                # REGISTRO GARANTIDO NO HISTÓRICO
                 execute_db(
                     "INSERT INTO movimentacoes_pro (data_hora, unidade, nome_item, tipo, quantidade, responsavel) VALUES (%s, %s, %s, %s, %s, %s)",
-                    (data_atual, f"{unidade_selecionada} -> {nova_unidade_atual}", nome_selecionado, "EMPRÉSTIMO/TRANSFERÊNCIA", qtd_envio, "Responsável Local")
+                    (data_atual, f"{unidade_selecionada} ➔ {nova_unidade_atual}", nome_selecionado, "EMPRÉSTIMO/TRANSFERÊNCIA", qtd_envio, "Responsável Local")
                 )
-                st.success(f"Material transferido com sucesso para {nova_unidade_atual}.")
+                st.success(f"Material transferido com sucesso para {nova_unidade_atual}! Já aparece no estoque de destino e no histórico.")
                 st.rerun()
 
 # --- TELA 4: FILA E CONFIRMAÇÃO DE DEVOLUÇÕES ---
@@ -557,7 +570,7 @@ elif menu == "Devolução em Lote":
     st.subheader("Fila de Devolução de Materiais")
     st.markdown("Confirme a devolução final dos itens que foram enviados para esta fila ou reverta envios acidentais.")
     
-    unidade_atual_filtro = st.selectbox("Selecione a Unidade atual", UNIDADES_PADRAO)
+    unidade_atual_filtro = padronizar_unidade(st.selectbox("Selecione a Unidade atual", UNIDADES_PADRAO))
     
     query_pendentes = "SELECT id, unidade_origem, unidade_atual, nome_item, categoria, quantidade, unidade_medida FROM estoque_pro WHERE pendente_devolucao = TRUE AND unidade_atual = %s"
     df_pendentes = run_query(query_pendentes, (unidade_atual_filtro,))
@@ -607,16 +620,17 @@ elif menu == "Histórico de Movimentações":
         df_logs = run_query("SELECT data_hora, unidade, nome_item, tipo, quantidade, responsavel FROM movimentacoes_pro ORDER BY id DESC")
         
     if not df_logs.empty:
-        df_logs['data_convertida'] = pd.to_datetime(df_logs['data_hora']).dt.date
+        df_logs['data_convertida'] = pd.to_datetime(df_logs['data_hora'], errors='coerce').dt.date
+        
         df_filtrado = df_logs[
             (df_logs['data_convertida'] >= data_inicio) & 
             (df_logs['data_convertida'] <= data_fim)
-        ]
-        df_filtrado = df_filtrado.drop(columns=['data_convertida'])
+        ].drop(columns=['data_convertida'])
         
         if not df_filtrado.empty:
             st.dataframe(df_filtrado, use_container_width=True, hide_index=True)
         else:
-            st.info("Nenhuma movimentação encontrada no período selecionado.")
+            st.info("Nenhuma movimentação encontrada no período selecionado. Abaixo estão todas as movimentações para auditoria:")
+            st.dataframe(df_logs.drop(columns=['data_convertida']), use_container_width=True, hide_index=True)
     else:
-        st.info("Nenhuma movimentação registrada até o momento.")
+        st.info("Nenhuma movimentação registrada até o momento no banco de dados.")
