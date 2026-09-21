@@ -1,4 +1,4 @@
-import streamlit as st
+
 import pandas as pd
 from datetime import datetime, date
 import psycopg2
@@ -62,6 +62,7 @@ def init_db():
                 """
                 CREATE TABLE IF NOT EXISTS estoque_pro (
                     id SERIAL PRIMARY KEY,
+                    unidade TEXT,
                     unidade_origem TEXT,
                     unidade_atual TEXT,
                     nome_item TEXT NOT NULL,
@@ -75,6 +76,12 @@ def init_db():
             )
 
             # Compatibilidade com versões antigas do banco.
+            # Algumas versões antigas possuem a coluna `unidade` com NOT NULL.
+            # O sistema atual usa `unidade_atual`/`unidade_origem`, então mantemos
+            # `unidade` como coluna legada e a sincronizamos nas escritas.
+            cursor.execute(
+                "ALTER TABLE estoque_pro ADD COLUMN IF NOT EXISTS unidade TEXT;"
+            )
             cursor.execute(
                 "ALTER TABLE estoque_pro ADD COLUMN IF NOT EXISTS unidade_origem TEXT;"
             )
@@ -83,6 +90,24 @@ def init_db():
             )
             cursor.execute(
                 "ALTER TABLE estoque_pro ADD COLUMN IF NOT EXISTS pendente_devolucao BOOLEAN DEFAULT FALSE;"
+            )
+
+            # Evita que a coluna legada `unidade` impeça novas inserções.
+            # Os dados continuam sendo sincronizados pelo aplicativo.
+            cursor.execute(
+                """
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_name = 'estoque_pro'
+                          AND column_name = 'unidade'
+                    ) THEN
+                        ALTER TABLE estoque_pro ALTER COLUMN unidade DROP NOT NULL;
+                    END IF;
+                END $$;
+                """
             )
 
             cursor.execute(
@@ -96,12 +121,16 @@ def init_db():
                           AND column_name = 'unidade'
                     ) THEN
                         UPDATE estoque_pro
-                        SET unidade_origem = unidade
+                        SET unidade_atual = COALESCE(unidade_atual, unidade)
+                        WHERE unidade_atual IS NULL;
+
+                        UPDATE estoque_pro
+                        SET unidade_origem = COALESCE(unidade_origem, unidade_atual, unidade)
                         WHERE unidade_origem IS NULL;
 
                         UPDATE estoque_pro
-                        SET unidade_atual = unidade
-                        WHERE unidade_atual IS NULL;
+                        SET unidade = COALESCE(unidade, unidade_atual, unidade_origem)
+                        WHERE unidade IS NULL;
                     END IF;
                 END $$;
                 """
@@ -253,6 +282,7 @@ def transferir_item_atomico(
                         nome_item = %s,
                         categoria = %s,
                         quantidade = %s,
+                        unidade = %s,
                         unidade_origem = %s,
                         unidade_medida = %s,
                         url_imagem = %s,
@@ -263,6 +293,7 @@ def transferir_item_atomico(
                         nome_limpo,
                         nova_categoria,
                         qtd_restante,
+                        unidade_atual,
                         nova_origem,
                         nova_medida,
                         url_imagem,
@@ -295,6 +326,7 @@ def transferir_item_atomico(
                     """
                     UPDATE estoque_pro
                     SET
+                        unidade = %s,
                         quantidade = %s,
                         categoria = %s,
                         unidade_medida = %s,
@@ -302,6 +334,7 @@ def transferir_item_atomico(
                     WHERE id = %s
                     """,
                     (
+                        unidade_destino,
                         nova_qtd_destino,
                         nova_categoria,
                         nova_medida,
@@ -313,6 +346,7 @@ def transferir_item_atomico(
                 cursor.execute(
                     """
                     INSERT INTO estoque_pro (
+                        unidade,
                         unidade_origem,
                         unidade_atual,
                         nome_item,
@@ -325,6 +359,7 @@ def transferir_item_atomico(
                     VALUES (%s, %s, %s, %s, %s, %s, %s, FALSE)
                     """,
                     (
+                        unidade_destino,
                         nova_origem,
                         unidade_destino,
                         nome_limpo,
@@ -874,6 +909,7 @@ if menu == "Visualizar Estoque":
                                                 nome_item = %s,
                                                 categoria = %s,
                                                 quantidade = %s,
+                                                unidade = unidade_atual,
                                                 unidade_origem = %s,
                                                 unidade_medida = %s,
                                                 url_imagem = %s
@@ -959,18 +995,19 @@ elif menu == "Entrada de Materiais":
 
                         if url_img:
                             execute_db(
-                                "UPDATE estoque_pro SET quantidade = %s, url_imagem = %s, categoria = %s, unidade_medida = %s WHERE id = %s",
+                                "UPDATE estoque_pro SET unidade = unidade_atual, quantidade = %s, url_imagem = %s, categoria = %s, unidade_medida = %s WHERE id = %s",
                                 (nova_qtd, url_img, categoria, un_medida, item_id)
                             )
                         else:
                             execute_db(
-                                "UPDATE estoque_pro SET quantidade = %s, categoria = %s, unidade_medida = %s WHERE id = %s",
+                                "UPDATE estoque_pro SET unidade = unidade_atual, quantidade = %s, categoria = %s, unidade_medida = %s WHERE id = %s",
                                 (nova_qtd, categoria, un_medida, item_id)
                             )
                     else:
                         execute_db(
                             """
                             INSERT INTO estoque_pro (
+                                unidade,
                                 unidade_origem,
                                 unidade_atual,
                                 nome_item,
@@ -983,6 +1020,7 @@ elif menu == "Entrada de Materiais":
                             VALUES (%s, %s, %s, %s, %s, %s, %s, FALSE)
                             """,
                             (
+                                unidade,
                                 unidade,
                                 unidade,
                                 nome_item,
@@ -1136,7 +1174,7 @@ elif menu == "Saída / Empréstimo":
                             )
                         else:
                             execute_db(
-                                "UPDATE estoque_pro SET quantidade = %s WHERE id = %s",
+                                "UPDATE estoque_pro SET quantidade = %s, unidade = unidade_atual WHERE id = %s",
                                 (nova_qtd, item_id_selecionado)
                             )
 
@@ -1213,7 +1251,7 @@ elif menu == "Saída / Empréstimo":
                             )
                         else:
                             cursor.execute(
-                                "UPDATE estoque_pro SET quantidade = %s WHERE id = %s",
+                                "UPDATE estoque_pro SET quantidade = %s, unidade = unidade_atual WHERE id = %s",
                                 (nova_qtd_origem, item_id_selecionado)
                             )
 
@@ -1239,13 +1277,14 @@ elif menu == "Saída / Empréstimo":
                             id_destino = int(destino[0])
                             q_nova = int(destino[1]) + int(qtd_envio)
                             cursor.execute(
-                                "UPDATE estoque_pro SET quantidade = %s WHERE id = %s",
+                                "UPDATE estoque_pro SET quantidade = %s, unidade = unidade_atual WHERE id = %s",
                                 (q_nova, id_destino)
                             )
                         else:
                             cursor.execute(
                                 """
                                 INSERT INTO estoque_pro (
+                                    unidade,
                                     unidade_origem,
                                     unidade_atual,
                                     nome_item,
@@ -1258,6 +1297,7 @@ elif menu == "Saída / Empréstimo":
                                 VALUES (%s, %s, %s, %s, %s, %s, %s, FALSE)
                                 """,
                                 (
+                                    nova_unidade_atual,
                                     origem_atual,
                                     nova_unidade_atual,
                                     nome_selecionado,
@@ -1392,10 +1432,11 @@ elif menu == "Devolução em Lote":
                                 """
                                 UPDATE estoque_pro
                                 SET unidade_atual = %s,
+                                    unidade = %s,
                                     pendente_devolucao = FALSE
                                 WHERE id = %s
                                 """,
-                                (row["unidade_origem"], int(row["id"]))
+                                (row["unidade_origem"], row["unidade_origem"], int(row["id"]))
                             )
 
                             cursor.execute(
