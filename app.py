@@ -55,7 +55,7 @@ def get_connection():
 def init_db():
     with get_connection() as conn:
         with conn.cursor() as cursor:
-            # Criação da tabela principal com as colunas corretas
+            # Criação da tabela principal com suporte à fila de devolução
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS estoque_pro (
                     id SERIAL PRIMARY KEY,
@@ -65,13 +65,15 @@ def init_db():
                     categoria TEXT NOT NULL,
                     quantidade INTEGER NOT NULL,
                     unidade_medida TEXT NOT NULL,
-                    url_imagem TEXT
+                    url_imagem TEXT,
+                    pendente_devolucao BOOLEAN DEFAULT FALSE
                 )
             """)
             
             # Garantir colunas caso a tabela seja de versão anterior
             cursor.execute("ALTER TABLE estoque_pro ADD COLUMN IF NOT EXISTS unidade_origem TEXT;")
             cursor.execute("ALTER TABLE estoque_pro ADD COLUMN IF NOT EXISTS unidade_atual TEXT;")
+            cursor.execute("ALTER TABLE estoque_pro ADD COLUMN IF NOT EXISTS pendente_devolucao BOOLEAN DEFAULT FALSE;")
             
             cursor.execute("""
                 DO $$ 
@@ -165,7 +167,7 @@ CATEGORIAS_PADRAO = [
     "Ferramentas de Medição", "Ferramentas Elétricas", "Kits Didáticos", "EPIs"
 ]
 
-# --- TELA 1: CONSULTA DE ESTOQUE COM EDIÇÃO DIRETA E MARCAÇÃO AZUL ---
+# --- TELA 1: CONSULTA DE ESTOQUE COM EDIÇÃO AUDITADA E FILA DE DEVOLUÇÃO ---
 if menu == "Visualizar Estoque":
     st.subheader("Catálogo Geral de Materiais e Conferência")
     
@@ -178,7 +180,7 @@ if menu == "Visualizar Estoque":
     if filtro_unidade == "Selecione uma Unidade":
         st.info("Por favor, selecione uma unidade no filtro acima para carregar os itens correspondentes.")
     else:
-        query = "SELECT id, unidade_origem, unidade_atual, nome_item, categoria, quantidade, unidade_medida, url_imagem FROM estoque_pro WHERE unidade_atual = %s"
+        query = "SELECT id, unidade_origem, unidade_atual, nome_item, categoria, quantidade, unidade_medida, url_imagem, pendente_devolucao FROM estoque_pro WHERE unidade_atual = %s"
         params = [filtro_unidade]
         
         if filtro_categoria != "Todas":
@@ -272,14 +274,13 @@ if menu == "Visualizar Estoque":
                             st.rerun()
                     with col_btn2:
                         if origem != atual:
-                            if st.button("↩️", key=f"btn_dev_{item_id}", help=f"Devolver para {origem}"):
-                                execute_db("UPDATE estoque_pro SET unidade_atual = %s WHERE id = %s", (origem, item_id))
-                                execute_db(
-                                    "INSERT INTO movimentacoes_pro (data_hora, unidade, nome_item, tipo, quantidade, responsavel) VALUES (%s, %s, %s, %s, %s, %s)",
-                                    (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), f"{atual} ➔ {origem} (DEVOLUÇÃO DIRETA)", row['nome_item'], "DEVOLUÇÃO", row['quantidade'], "Responsável Local")
-                                )
-                                st.success(f"Item devolvido com sucesso para {origem}!")
-                                st.rerun()
+                            if not row.get("pendente_devolucao", False):
+                                if st.button("📦", key=f"btn_fila_{item_id}", help="Enviar para a Fila de Devolução"):
+                                    execute_db("UPDATE estoque_pro SET pendente_devolucao = TRUE WHERE id = %s", (item_id,))
+                                    st.toast("Item enviado para a aba de Devolução!")
+                                    st.rerun()
+                            else:
+                                st.button("⏳ Na Fila", key=f"btn_fila_dis_{item_id}", disabled=True)
 
                     if esta_marcado:
                         st.markdown("</div>", unsafe_allow_html=True)
@@ -312,6 +313,9 @@ if menu == "Visualizar Estoque":
                                     )
                                     st.success("Item excluído com sucesso.")
                                 else:
+                                    qtd_anterior = int(row['quantidade'])
+                                    diff = nova_qtd - qtd_anterior
+                                    
                                     if nova_imagem is not None:
                                         novo_link = upload_imgbb(nova_imagem)
                                         if novo_link:
@@ -320,6 +324,14 @@ if menu == "Visualizar Estoque":
                                     else:
                                         execute_db("UPDATE estoque_pro SET nome_item = %s, categoria = %s, quantidade = %s, unidade_origem = %s WHERE id = %s",
                                                    (novo_nome.strip().title(), nova_categoria, nova_qtd, nova_origem, item_id))
+                                    
+                                    # REGISTRA AUDITORIA DE ALTERAÇÕES DE QUANTIDADE
+                                    if diff != 0:
+                                        tipo_mov = "AJUSTE (ENTRADA MANUAL)" if diff > 0 else "AJUSTE (PERDA/SAÍDA MANUAL)"
+                                        execute_db(
+                                            "INSERT INTO movimentacoes_pro (data_hora, unidade, nome_item, tipo, quantidade, responsavel) VALUES (%s, %s, %s, %s, %s, %s)",
+                                            (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), atual, row['nome_item'], tipo_mov, abs(diff), "Correção de Edição")
+                                        )
                                     st.success("Alterações salvas com sucesso!")
                                 
                                 st.session_state['editando_id'] = None
@@ -483,50 +495,50 @@ elif menu == "Saída / Empréstimo":
                 st.success(f"Material transferido com sucesso para {nova_unidade_atual}.")
                 st.rerun()
 
-# --- TELA 4: DEVOLUÇÃO EM LOTE PARA A ORIGEM ---
+# --- TELA 4: FILA E CONFIRMAÇÃO DE DEVOLUÇÕES (COM OPÇÃO DE REVERTER) ---
 elif menu == "Devolução em Lote":
-    st.subheader("Devolução Rápida de Materiais Emprestados para a Origem")
-    st.markdown("Esta ferramenta lista todos os materiais que estão em uma unidade física diferente da sua unidade de origem, permitindo retorná-los em lote rapidamente.")
+    st.subheader("Fila de Devolução de Materiais")
+    st.markdown("Confirme a devolução dos itens que foram enviados para esta fila ou reverta envios acidentais.")
     
-    unidade_atual_filtro = st.selectbox("Selecione a Unidade onde os materiais estão no momento", UNIDADES_PADRAO)
+    unidade_atual_filtro = st.selectbox("Selecione a Unidade atual", UNIDADES_PADRAO)
     
-    query_emprestados = "SELECT id, unidade_origem, unidade_atual, nome_item, categoria, quantidade, unidade_medida FROM estoque_pro WHERE unidade_atual = %s AND unidade_origem != %s"
-    df_emprestados = run_query(query_emprestados, (unidade_atual_filtro, unidade_atual_filtro))
+    # Busca APENAS itens marcados com pendente_devolucao = TRUE
+    query_pendentes = "SELECT id, unidade_origem, unidade_atual, nome_item, categoria, quantidade, unidade_medida FROM estoque_pro WHERE pendente_devolucao = TRUE AND unidade_atual = %s"
+    df_pendentes = run_query(query_pendentes, (unidade_atual_filtro,))
     
-    if not df_emprestados.empty:
-        st.markdown(f"Foram encontrados **{len(df_emprestados)}** itens emprestados nesta unidade.")
+    if not df_pendentes.empty:
+        st.markdown(f"**{len(df_pendentes)}** item(ns) aguardando devolução.")
+        st.divider()
         
-        with st.form("form_devolucao_lote"):
-            itens_a_devolver = []
-            for _, row in df_emprestados.iterrows():
-                devolver = st.checkbox(f"Devolver **{row['nome_item']}** (Qtd: {row['quantidade']} {row['unidade_medida']}) para **{row['unidade_origem']}**", value=True, key=f"dev_{row['id']}")
-                if devolver:
-                    itens_a_devolver.append(row)
+        for _, row in df_pendentes.iterrows():
+            col_info, col_conf, col_rev = st.columns([5, 2, 2], vertical_alignment="center")
             
-            btn_devolver = st.form_submit_button("Confirmar Devolução em Lote para a Origem")
-            
-            if btn_devolver:
-                data_atual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                for item in itens_a_devolver:
-                    i_id = item['id']
-                    origem = item['unidade_origem']
-                    nome = item['nome_item']
-                    qtd = item['quantidade']
-                    
-                    execute_db("UPDATE estoque_pro SET unidade_atual = %s WHERE id = %s", (origem, i_id))
-                    
+            with col_info:
+                st.write(f"📦 **{row['nome_item']}** (Qtd: {row['quantidade']} {row['unidade_medida']})")
+                st.caption(f"Destino: **{row['unidade_origem']}**")
+                
+            with col_conf:
+                if st.button("✅ Confirmar", key=f"conf_{row['id']}", use_container_width=True):
+                    execute_db("UPDATE estoque_pro SET unidade_atual = %s, pendente_devolucao = FALSE WHERE id = %s", (row['unidade_origem'], row['id']))
                     execute_db(
                         "INSERT INTO movimentacoes_pro (data_hora, unidade, nome_item, tipo, quantidade, responsavel) VALUES (%s, %s, %s, %s, %s, %s)",
-                        (data_atual, f"{unidade_atual_filtro} ➔ {origem} (DEVOLUÇÃO EM LOTE)", nome, "DEVOLUÇÃO", qtd, "Responsável Local")
+                        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), f"{unidade_atual_filtro} ➔ {row['unidade_origem']}", row['nome_item'], "DEVOLUÇÃO", row['quantidade'], "Responsável Local")
                     )
-                st.success("Devolução em lote realizada com sucesso para todos os itens selecionados.")
-                st.rerun()
+                    st.success(f"{row['nome_item']} devolvido!")
+                    st.rerun()
+                    
+            with col_rev:
+                if st.button("❌ Reverter", key=f"rev_{row['id']}", use_container_width=True, help="Tira o item da fila de devolução sem alterar seu local"):
+                    execute_db("UPDATE estoque_pro SET pendente_devolucao = FALSE WHERE id = %s", (row['id'],))
+                    st.toast("Envio cancelado com sucesso.")
+                    st.rerun()
+            st.divider()
     else:
-        st.info("Não há materiais emprestados de outras unidades nesta localidade no momento.")
+        st.info("Sua fila de devolução está vazia.")
 
 # --- TELA 5: HISTÓRICO E AUDITORIA ---
 elif menu == "Histórico de Movimentações":
-    st.subheader("Auditoria de Movimentações (Entradas, Saídas e Empréstimos)")
+    st.subheader("Auditoria de Movimentações (Entradas, Saídas, Empréstimos e Ajustes)")
     
     col_d1, col_d2 = st.columns(2)
     with col_d1:
@@ -535,7 +547,7 @@ elif menu == "Histórico de Movimentações":
         data_fim = st.date_input("Data Final", value=date.today())
         
     with st.spinner("Carregando histórico..."):
-        df_logs = run_query("SELECT data_hora, unidade, nome_item, tipo, quantidade FROM movimentacoes_pro ORDER BY id DESC")
+        df_logs = run_query("SELECT data_hora, unidade, nome_item, tipo, quantidade, responsavel FROM movimentacoes_pro ORDER BY id DESC")
         
     if not df_logs.empty:
         df_logs['data_convertida'] = pd.to_datetime(df_logs['data_hora']).dt.date
