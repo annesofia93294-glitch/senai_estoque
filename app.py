@@ -243,7 +243,7 @@ if menu == "Visualizar Estoque":
                     c_cod.write(f"#{item_id}")
                     
                     url_img = row.get("url_imagem")
-                    if url_img and str(url_img).startswith("http"):
+                    if url_img and pd.notna(url_img) and str(url_img).startswith("http"):
                         try:
                             c_img.image(url_img, width=50)
                         except Exception:
@@ -266,7 +266,7 @@ if menu == "Visualizar Estoque":
                     else:
                         c_loc.write(atual)
                     
-                    unidade_medida_atual = row.get("unidade_medida") or "Unidade (un)"
+                    unidade_medida_atual = row.get("unidade_medida") if pd.notna(row.get("unidade_medida")) else "Unidade (un)"
                     c_qtd.write(f"**{row['quantidade']}** {unidade_medida_atual}")
                     
                     col_btn1, col_btn2 = c_acao.columns(2)
@@ -290,7 +290,7 @@ if menu == "Visualizar Estoque":
                     if bg_style:
                         st.markdown("</div>", unsafe_allow_html=True)
 
-                    # --- FORMULÁRIO DE EDIÇÃO E TRANSFERÊNCIA INTELIGENTE ---
+                    # --- FORMULÁRIO DE EDIÇÃO E TRANSFERÊNCIA BLINDADO ---
                     if st.session_state.get('editando_id') == item_id:
                         with st.form(key=f"form_edicao_direta_{item_id}", clear_on_submit=False):
                             st.markdown(f"**Editar / Transferir Material #{item_id}: {row['nome_item']}**")
@@ -303,6 +303,11 @@ if menu == "Visualizar Estoque":
                             with e_col2:
                                 idx_origem = UNIDADES_PADRAO.index(origem) if origem in UNIDADES_PADRAO else 0
                                 nova_origem = st.selectbox("Unidade Proprietária (Dono)", UNIDADES_PADRAO, index=idx_origem)
+                                
+                                unidades_medida_lista = ["Unidade (un)", "Metros (m)", "Quilogramas (kg)", "Litros (L)", "Caixa (cx)"]
+                                medida_atual_idx = unidades_medida_lista.index(row['unidade_medida']) if row.get('unidade_medida') in unidades_medida_lista else 0
+                                nova_medida = st.selectbox("Unidade de Medida", unidades_medida_lista, index=medida_atual_idx)
+                                
                                 nova_imagem = st.file_uploader("Alterar Foto (Opcional)", type=["png", "jpg", "jpeg"], key=f"up_{item_id}")
                             
                             st.markdown("---")
@@ -323,34 +328,32 @@ if menu == "Visualizar Estoque":
                             cancelar_edicao = sub_col2.form_submit_button("Cancelar")
                             
                             if salvar_edicao:
-                                if excluir_check:
+                                if excluir_check or nova_qtd == 0:
                                     execute_db("DELETE FROM estoque_pro WHERE id = %s", (item_id,))
                                     execute_db(
                                         "INSERT INTO movimentacoes_pro (data_hora, unidade, nome_item, tipo, quantidade, responsavel) VALUES (%s, %s, %s, %s, %s, %s)",
-                                        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), atual, row['nome_item'], "EXCLUSÃO", row['quantidade'], "Responsável Local")
+                                        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), atual, row['nome_item'], "EXCLUSÃO/ZERADO", row['quantidade'], "Responsável Local")
                                     )
-                                    st.success("Item excluído com sucesso.")
+                                    st.success("Item excluído ou zerado com sucesso.")
                                 else:
                                     nome_limpo = novo_nome.strip().title()
                                     
-                                    # Garantir que a unidade de medida nunca seja None/vazia
-                                    medida_segura = row.get('unidade_medida') if pd.notna(row.get('unidade_medida')) else "Unidade (un)"
+                                    # Tratamento seguro da URL da imagem
+                                    img_original = row.get('url_imagem')
+                                    url_para_inserir = img_original if pd.notna(img_original) and str(img_original).strip() != "" and str(img_original).lower() != "nan" else None
                                     
-                                    # Se houver transferência imediata junto com a edição
                                     if fazer_transferencia and unidade_destino_transf and qtd_transf > 0:
                                         if qtd_transf > nova_qtd:
                                             st.error("A quantidade a enviar não pode ser maior que a quantidade total.")
                                         else:
                                             qtd_restante = nova_qtd - qtd_transf
                                             
-                                            # Atualiza origem com o restante
                                             if qtd_restante == 0:
                                                 execute_db("DELETE FROM estoque_pro WHERE id = %s", (item_id,))
                                             else:
-                                                execute_db("UPDATE estoque_pro SET nome_item = %s, categoria = %s, quantidade = %s, unidade_origem = %s WHERE id = %s",
-                                                           (nome_limpo, nova_categoria, qtd_restante, nova_origem, item_id))
+                                                execute_db("UPDATE estoque_pro SET nome_item = %s, categoria = %s, quantidade = %s, unidade_origem = %s, unidade_medida = %s WHERE id = %s",
+                                                           (nome_limpo, nova_categoria, qtd_restante, nova_origem, nova_medida, item_id))
                                             
-                                            # Busca inteligente com LOWER e TRIM na destino para nunca duplicar ou sumir
                                             ja_tem_dest = run_query(
                                                 "SELECT id, quantidade FROM estoque_pro WHERE unidade_atual = %s AND LOWER(TRIM(nome_item)) = LOWER(TRIM(%s)) AND unidade_origem = %s", 
                                                 (unidade_destino_transf, nome_limpo, nova_origem)
@@ -362,7 +365,7 @@ if menu == "Visualizar Estoque":
                                             else:
                                                 execute_db(
                                                     "INSERT INTO estoque_pro (unidade_origem, unidade_atual, nome_item, categoria, quantidade, unidade_medida, url_imagem) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                                                    (nova_origem, unidade_destino_transf, nome_limpo, nova_categoria, qtd_transf, medida_segura, row.get('url_imagem'))
+                                                    (nova_origem, unidade_destino_transf, nome_limpo, nova_categoria, qtd_transf, nova_medida, url_para_inserir)
                                                 )
                                             
                                             execute_db(
@@ -370,15 +373,14 @@ if menu == "Visualizar Estoque":
                                                 (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), f"{atual} -> {unidade_destino_transf}", nome_limpo, "TRANSFERÊNCIA INTEGRADA", qtd_transf, "Responsável Local")
                                             )
                                     else:
-                                        # Apenas edição normal
                                         if nova_imagem is not None:
                                             novo_link = upload_imgbb(nova_imagem)
                                             if novo_link:
-                                                execute_db("UPDATE estoque_pro SET nome_item = %s, categoria = %s, quantidade = %s, unidade_origem = %s, url_imagem = %s WHERE id = %s",
-                                                           (nome_limpo, nova_categoria, nova_qtd, nova_origem, novo_link, item_id))
+                                                execute_db("UPDATE estoque_pro SET nome_item = %s, categoria = %s, quantidade = %s, unidade_origem = %s, unidade_medida = %s, url_imagem = %s WHERE id = %s",
+                                                           (nome_limpo, nova_categoria, nova_qtd, nova_origem, nova_medida, novo_link, item_id))
                                         else:
-                                            execute_db("UPDATE estoque_pro SET nome_item = %s, categoria = %s, quantidade = %s, unidade_origem = %s WHERE id = %s",
-                                                       (nome_limpo, nova_categoria, nova_qtd, nova_origem, item_id))
+                                            execute_db("UPDATE estoque_pro SET nome_item = %s, categoria = %s, quantidade = %s, unidade_origem = %s, unidade_medida = %s WHERE id = %s",
+                                                       (nome_limpo, nova_categoria, nova_qtd, nova_origem, nova_medida, item_id))
                                             
                                     st.success("Atualização realizada com sucesso!")
                                 
@@ -420,7 +422,6 @@ elif menu == "Entrada de Materiais":
                 if imagem_upload is not None:
                     url_img = upload_imgbb(imagem_upload)
                 
-                # Busca inteligente por nome e unidade (ignorando maiúsculas/minúsculas)
                 item_existente = run_query(
                     "SELECT id, quantidade FROM estoque_pro WHERE unidade_atual = %s AND LOWER(TRIM(nome_item)) = LOWER(TRIM(%s)) AND unidade_origem = %s",
                     (unidade, nome_item, unidade)
@@ -474,7 +475,7 @@ elif menu == "Saída / Empréstimo":
         
         col_img, col_info = st.columns([1, 2])
         with col_img:
-            if imagem_atual and str(imagem_atual).startswith("http"):
+            if imagem_atual and pd.notna(imagem_atual) and str(imagem_atual).startswith("http"):
                 try:
                     st.image(imagem_atual, caption=nome_selecionado, width=200)
                 except Exception:
@@ -521,13 +522,15 @@ elif menu == "Saída / Empréstimo":
             if st.button("Confirmar Envio / Empréstimo"):
                 data_atual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 
+                img_original_envio = dados_item.get('url_imagem')
+                url_para_inserir_envio = img_original_envio if pd.notna(img_original_envio) and str(img_original_envio).strip() != "" and str(img_original_envio).lower() != "nan" else None
+                
                 if qtd_envio == qtd_atual:
                     execute_db("UPDATE estoque_pro SET unidade_atual = %s WHERE id = %s", (nova_unidade_atual, item_id_selecionado))
                 else:
                     nova_qtd_origem = int(qtd_atual) - int(qtd_envio)
                     execute_db("UPDATE estoque_pro SET quantidade = %s WHERE id = %s", (nova_qtd_origem, item_id_selecionado))
                     
-                    # Busca inteligente com LOWER e TRIM na destino para nunca falhar
                     ja_tem = run_query(
                         "SELECT id, quantidade FROM estoque_pro WHERE unidade_atual = %s AND LOWER(TRIM(nome_item)) = LOWER(TRIM(%s)) AND unidade_origem = %s", 
                         (nova_unidade_atual, nome_selecionado, origem_atual)
@@ -539,7 +542,7 @@ elif menu == "Saída / Empréstimo":
                     else:
                         execute_db(
                             "INSERT INTO estoque_pro (unidade_origem, unidade_atual, nome_item, categoria, quantidade, unidade_medida, url_imagem) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                            (origem_atual, nova_unidade_atual, nome_selecionado, dados_item['categoria'], qtd_envio, medida_atual_item, imagem_atual)
+                            (origem_atual, nova_unidade_atual, nome_selecionado, dados_item['categoria'], qtd_envio, medida_atual_item, url_para_inserir_envio)
                         )
 
                 execute_db(
