@@ -37,7 +37,7 @@ st.markdown("""
         border-radius: 4px;
         font-weight: 600;
         border: none;
-        padding: 0.5rem 1rem;
+        padding: 0.4rem 0.8rem;
     }
     .stButton>button:hover {
         background-color: #003366;
@@ -153,7 +153,7 @@ st.divider()
 st.sidebar.markdown("### Menu Principal")
 menu = st.sidebar.selectbox(
     "Escolha uma opção",
-    ["Visualizar Estoque", "Entrada de Materiais", "Saída / Empréstimo / Edição", "Devolução em Lote", "Histórico de Movimentações"]
+    ["Visualizar Estoque", "Entrada de Materiais", "Saída / Empréstimo", "Devolução em Lote", "Histórico de Movimentações"]
 )
 
 UNIDADES_PADRAO = ["SENAI Barreiras", "SENAI Luis Eduardo", "Almoxarifado Central"]
@@ -162,9 +162,9 @@ CATEGORIAS_PADRAO = [
     "Ferramentas de Medição", "Ferramentas Elétricas", "Kits Didáticos", "EPIs"
 ]
 
-# --- TELA 1: CONSULTA DE ESTOQUE COM CHECKLIST DE CONFERÊNCIA ---
+# --- TELA 1: CONSULTA DE ESTOQUE COM EDIÇÃO DIRETA E MARCAÇÃO AZUL ---
 if menu == "Visualizar Estoque":
-    st.subheader("Catálogo Geral de Materiais e Conferência Física")
+    st.subheader("Catálogo Geral de Materiais e Conferência")
     
     col1, col2 = st.columns(2)
     with col1:
@@ -201,67 +201,139 @@ if menu == "Visualizar Estoque":
                     <span style="font-size:22px; font-weight:bold; color:#004a87;">{df_estoque['categoria'].nunique()}</span></div>""", unsafe_allow_html=True)
             
             st.markdown("<br>", unsafe_allow_html=True)
-            st.markdown("**Painel de Conferência de Inventário:** Marque os itens abaixo conforme forem conferidos fisicamente.")
+            st.markdown("**Lista de Materiais:** Marque a caixinha à esquerda para destacar o item em azul e facilitar sua conferência visual.")
             
+            # Inicializa estados na sessão se não existirem
+            if 'marcados_visualizacao' not in st.session_state:
+                st.session_state['marcados_visualizacao'] = {}
+            if 'editando_id' not in st.session_state:
+                st.session_state['editando_id'] = None
+
             c_chk, c_cod, c_img, c_desc, c_cat, c_loc, c_qtd, c_acao = st.columns([1, 1, 2, 3, 2, 2, 2, 2])
-            c_chk.write("**STATUS**")
+            c_chk.write("**MARCAR**")
             c_cod.write("**CÓD**")
             c_img.write("**FOTO**")
             c_desc.write("**MATERIAL**")
             c_cat.write("**CATEGORIA**")
             c_loc.write("**LOCAL / ORIGEM**")
             c_qtd.write("**QTD**")
-            c_acao.write("**AÇÃO**")
+            c_acao.write("**AÇÕES**")
             st.divider()
-
-            # Inicializa estado para guardar os itens conferidos na sessão
-            if 'conferidos' not in st.session_state:
-                st.session_state['conferidos'] = {}
 
             for _, row in df_estoque.iterrows():
                 item_id = row['id']
-                c_chk, c_cod, c_img, c_desc, c_cat, c_loc, c_qtd, c_acao = st.columns([1, 1, 2, 3, 2, 2, 2, 2], vertical_alignment="center")
                 
-                # Checkbox de conferência
-                ja_conferido = st.session_state['conferidos'].get(item_id, False)
-                marcado = c_chk.checkbox("", value=ja_conferido, key=f"conf_{item_id}")
-                st.session_state['conferidos'][item_id] = marcado
+                # Verifica se está marcado para pintar a linha de fundo em azul claro
+                esta_marcado = st.session_state['marcados_visualizacao'].get(item_id, False)
+                bg_style = "background-color: #eef4fb; padding: 6px; border-radius: 6px;" if esta_marcado else ""
                 
-                c_cod.write(f"#{item_id}")
-                
-                url_img = row.get("url_imagem")
-                if url_img and str(url_img).startswith("http"):
-                    try:
-                        c_img.image(url_img, width=60)
-                    except Exception:
-                        c_img.caption("Indisponível")
-                else:
-                    c_img.caption("Sem foto")
+                with st.container():
+                    if esta_marcado:
+                        st.markdown(f"<div style='{bg_style}'>", unsafe_allow_html=True)
+
+                    c_chk, c_cod, c_img, c_desc, c_cat, c_loc, c_qtd, c_acao = st.columns([1, 1, 2, 3, 2, 2, 2, 2], vertical_alignment="center")
                     
-                c_desc.write(row["nome_item"])
-                c_cat.write(row["categoria"])
-                
-                origem = row.get("unidade_origem", "Desconhecida")
-                atual = row.get("unidade_atual", "Desconhecida")
-                
-                if origem != atual:
-                    c_loc.markdown(f"**{atual}**<br><span style='color:#c0392b; font-size:11px;'>Origem: {origem}</span>", unsafe_allow_html=True)
-                else:
-                    c_loc.write(atual)
-                
-                # Alerta visual se estoque estiver baixo (ex: <= 2)
-                qtd_val = row['quantidade']
-                if qtd_val <= 2:
-                    c_qtd.markdown(f"<span style='color:red; font-weight:bold;'>{qtd_val} {row['unidade_medida']} ⚠️</span>", unsafe_allow_html=True)
-                else:
-                    c_qtd.write(f"**{qtd_val}** {row['unidade_medida']}")
-                
-                # Botão rápido para ir direto à edição deste item
-                if c_acao.button("Editar", key=f"edit_btn_{item_id}"):
-                    st.session_state['item_para_editar'] = item_id
-                    st.success(f"Item #{item_id} selecionado. Vá para a aba 'Saída / Empréstimo / Edição' para alterá-lo.")
-                
-                st.divider()
+                    # Checkbox de marcação estética para não se perder
+                    marcado = c_chk.checkbox("", value=esta_marcado, key=f"marcar_{item_id}")
+                    if marcado != esta_marcado:
+                        st.session_state['marcados_visualizacao'][item_id] = marcado
+                        st.rerun()
+                    
+                    c_cod.write(f"#{item_id}")
+                    
+                    url_img = row.get("url_imagem")
+                    if url_img and str(url_img).startswith("http"):
+                        try:
+                            c_img.image(url_img, width=50)
+                        except Exception:
+                            c_img.caption("Indisponível")
+                    else:
+                        c_img.caption("Sem foto")
+                        
+                    c_desc.write(row["nome_item"])
+                    c_cat.write(row["categoria"])
+                    
+                    origem = row.get("unidade_origem", "Desconhecida")
+                    atual = row.get("unidade_atual", "Desconhecida")
+                    
+                    if origem != atual:
+                        c_loc.markdown(f"**{atual}**<br><span style='color:#c0392b; font-size:11px;'>Origem: {origem}</span>", unsafe_allow_html=True)
+                    else:
+                        c_loc.write(atual)
+                    
+                    c_qtd.write(f"**{row['quantidade']}** {row['unidade_medida']}")
+                    
+                    # Botões de Ação na Linha
+                    col_btn1, col_btn2 = c_acao.columns(2)
+                    with col_btn1:
+                        if st.button("✏️", key=f"btn_edit_{item_id}", help="Editar item diretamente"):
+                            if st.session_state['editando_id'] == item_id:
+                                st.session_state['editando_id'] = None
+                            else:
+                                st.session_state['editando_id'] = item_id
+                            st.rerun()
+                    with col_btn2:
+                        # Se estiver emprestado, botão para devolver direto para a origem
+                        if origem != atual:
+                            if st.button("↩️", key=f"btn_dev_{item_id}", help=f"Devolver para {origem}"):
+                                execute_db("UPDATE estoque_pro SET unidade_atual = %s WHERE id = %s", (origem, item_id))
+                                execute_db(
+                                    "INSERT INTO movimentacoes_pro (data_hora, unidade, nome_item, tipo, quantidade, responsavel) VALUES (%s, %s, %s, %s, %s, %s)",
+                                    (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), f"{atual} ➔ {origem} (DEVOLUÇÃO DIRETA)", row['nome_item'], "DEVOLUÇÃO", row['quantidade'], "Responsável Local")
+                                )
+                                st.success(f"Item devolvido com sucesso para {origem}!")
+                                st.rerun()
+
+                    if esta_marcado:
+                        st.markdown("</div>", unsafe_allow_html=True)
+
+                    # --- FORMULÁRIO DE EDIÇÃO INTEGRADO LOGO ABAIXO DO ITEM SELECIONADO ---
+                    if st.session_state.get('editando_id') == item_id:
+                        with st.form(key=f"form_edicao_direta_{item_id}", clear_on_submit=False):
+                            st.markdown(f"**Editando Material #{item_id}: {row['nome_item']}**")
+                            e_col1, e_col2, e_col3 = st.columns(3)
+                            with e_col1:
+                                novo_nome = st.text_input("Nome do Material", value=row['nome_item'])
+                                nova_categoria = st.selectbox("Categoria", CATEGORIAS_PADRAO, index=CATEGORIAS_PADRAO.index(row['categoria']) if row['categoria'] in CATEGORIAS_PADRAO else 0)
+                            with e_col2:
+                                nova_qtd = st.number_input("Quantidade", min_value=0, value=int(row['quantidade']), step=1)
+                                idx_origem = UNIDADES_PADRAO.index(origem) if origem in UNIDADES_PADRAO else 0
+                                nova_origem = st.selectbox("Unidade Proprietária (Origem)", UNIDADES_PADRAO, index=idx_origem)
+                            with e_col3:
+                                nova_imagem = st.file_uploader("Alterar Foto (Opcional)", type=["png", "jpg", "jpeg"], key=f"up_{item_id}")
+                                excluir_check = st.checkbox("Excluir este item permanentemente")
+                            
+                            sub_col1, sub_col2 = st.columns(2)
+                            salvar_edicao = sub_col1.form_submit_button("Salvar Alterações")
+                            cancelar_edicao = sub_col2.form_submit_button("Cancelar")
+                            
+                            if salvar_edicao:
+                                if excluir_check:
+                                    execute_db("DELETE FROM estoque_pro WHERE id = %s", (item_id,))
+                                    execute_db(
+                                        "INSERT INTO movimentacoes_pro (data_hora, unidade, nome_item, tipo, quantidade, responsavel) VALUES (%s, %s, %s, %s, %s, %s)",
+                                        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), atual, row['nome_item'], "EXCLUSÃO", row['quantidade'], "Responsável Local")
+                                    )
+                                    st.success("Item excluído com sucesso.")
+                                else:
+                                    if nova_imagem is not None:
+                                        novo_link = upload_imgbb(nova_imagem)
+                                        if novo_link:
+                                            execute_db("UPDATE estoque_pro SET nome_item = %s, categoria = %s, quantidade = %s, unidade_origem = %s, url_imagem = %s WHERE id = %s",
+                                                       (novo_nome.strip().title(), nova_categoria, nova_qtd, nova_origem, novo_link, item_id))
+                                    else:
+                                        execute_db("UPDATE estoque_pro SET nome_item = %s, categoria = %s, quantidade = %s, unidade_origem = %s WHERE id = %s",
+                                                   (novo_nome.strip().title(), nova_categoria, nova_qtd, nova_origem, item_id))
+                                    st.success("Alterações salvas com sucesso!")
+                                
+                                st.session_state['editando_id'] = None
+                                st.rerun()
+                                
+                            if cancelar_edicao:
+                                st.session_state['editando_id'] = None
+                                st.rerun()
+
+                    st.divider()
         else:
             st.info("Nenhum material encontrado com os filtros selecionados.")
 
@@ -317,9 +389,9 @@ elif menu == "Entrada de Materiais":
                 )
                 st.success("Entrada registrada com sucesso.")
 
-# --- TELA 3: SAÍDA, EMPRÉSTIMO E EDIÇÃO ---
-elif menu == "Saída / Empréstimo / Edição":
-    st.subheader("Baixa, Empréstimo entre Unidades e Edição de Cadastros")
+# --- TELA 3: SAÍDA E EMPRÉSTIMO ---
+elif menu == "Saída / Empréstimo":
+    st.subheader("Baixa de Materiais e Empréstimo entre Unidades")
     
     unidade_selecionada = st.selectbox("Selecione a Unidade onde o material está fisicamente", UNIDADES_PADRAO)
     
@@ -333,15 +405,9 @@ elif menu == "Saída / Empréstimo / Edição":
         st.warning("Nenhum item cadastrado nesta unidade.")
     else:
         opcoes_itens = {row["id"]: f"#{row['id']} - {row['nome_item']} (Qtd: {row['quantidade']} {row['unidade_medida']}) - Origem: {row['unidade_origem']}" for _, row in itens_disponiveis.iterrows()}
-        
-        # Verifica se veio pré-selecionado da aba de visualização
-        default_idx = 0
-        if 'item_para_editar' in st.session_state and st.session_state['item_para_editar'] in opcoes_itens:
-            keys_list = list(opcoes_itens.keys())
-            default_idx = keys_list.index(st.session_state['item_para_editar'])
 
         item_id_selecionado = st.selectbox(
-            "Selecione o Material", options=list(opcoes_itens.keys()), index=default_idx, format_func=lambda x: opcoes_itens[x]
+            "Selecione o Material", options=list(opcoes_itens.keys()), format_func=lambda x: opcoes_itens[x]
         )
         
         dados_item = itens_disponiveis[itens_disponiveis["id"] == item_id_selecionado].iloc[0]
@@ -366,7 +432,7 @@ elif menu == "Saída / Empréstimo / Edição":
                 st.warning(f"Este material está emprestado e pertence originalmente a {origem_atual}.")
 
         st.divider()
-        acao = st.radio("Escolha a Operação:", ["Dar Baixa (Saída Definitiva)", "Empréstimo / Enviar para Outra Unidade", "Editar Informações / Origem / Excluir Item"])
+        acao = st.radio("Escolha a Operação:", ["Dar Baixa (Saída Definitiva)", "Empréstimo / Enviar para Outra Unidade"])
         
         if acao == "Dar Baixa (Saída Definitiva)":
             quantidade_saida = st.number_input("Quantidade para Retirar", min_value=1, max_value=int(qtd_atual) if qtd_atual > 0 else 1, step=1)
@@ -421,45 +487,6 @@ elif menu == "Saída / Empréstimo / Edição":
                 st.success(f"Material transferido com sucesso para {nova_unidade_atual}.")
                 st.rerun()
 
-        elif acao == "Editar Informações / Origem / Excluir Item":
-            novo_nome = st.text_input("Corrigir Nome do Material", value=nome_selecionado)
-            nova_qtd_total = st.number_input("Corrigir Quantidade Total", min_value=0, value=int(qtd_atual), step=1)
-            
-            idx_origem = UNIDADES_PADRAO.index(origem_atual) if origem_atual in UNIDADES_PADRAO else 0
-            nova_origem = st.selectbox("Corrigir Unidade Proprietária (Origem Correta)", UNIDADES_PADRAO, index=idx_origem)
-            
-            nova_imagem = st.file_uploader("Atualizar Foto", type=["png", "jpg", "jpeg"])
-            
-            st.markdown("<br>", unsafe_allow_html=True)
-            col_salvar, col_excluir = st.columns(2)
-            
-            with col_salvar:
-                if st.button("Salvar Alterações Cadastrais"):
-                    if nova_imagem is not None:
-                        novo_link = upload_imgbb(nova_imagem)
-                        if novo_link:
-                            execute_db("UPDATE estoque_pro SET nome_item = %s, quantidade = %s, unidade_origem = %s, url_imagem = %s WHERE id = %s",
-                                       (novo_nome.strip().title(), nova_qtd_total, nova_origem, novo_link, item_id_selecionado))
-                    else:
-                        execute_db("UPDATE estoque_pro SET nome_item = %s, quantidade = %s, unidade_origem = %s WHERE id = %s",
-                                   (novo_nome.strip().title(), nova_qtd_total, nova_origem, item_id_selecionado))
-                    st.success("Alterações salvas com sucesso.")
-                    st.rerun()
-            
-            with col_excluir:
-                confirmar_exclusao = st.checkbox("Confirmar exclusão definitiva do item")
-                if st.button("Excluir Item do Sistema"):
-                    if confirmar_exclusao:
-                        execute_db("DELETE FROM estoque_pro WHERE id = %s", (item_id_selecionado,))
-                        execute_db(
-                            "INSERT INTO movimentacoes_pro (data_hora, unidade, nome_item, tipo, quantidade, responsavel) VALUES (%s, %s, %s, %s, %s, %s)",
-                            (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), unidade_selecionada, nome_selecionado, "EXCLUSÃO", qtd_atual, "Responsável Local")
-                        )
-                        st.success("Item excluído com sucesso.")
-                        st.rerun()
-                    else:
-                        st.error("Marque a caixa de confirmação para poder excluir o item.")
-
 # --- TELA 4: DEVOLUÇÃO EM LOTE PARA A ORIGEM ---
 elif menu == "Devolução em Lote":
     st.subheader("Devolução Rápida de Materiais Emprestados para a Origem")
@@ -467,7 +494,6 @@ elif menu == "Devolução em Lote":
     
     unidade_atual_filtro = st.selectbox("Selecione a Unidade onde os materiais estão no momento", UNIDADES_PADRAO)
     
-    # Busca itens onde a unidade atual é a selecionada, mas a origem é diferente
     query_emprestados = "SELECT id, unidade_origem, unidade_atual, nome_item, categoria, quantidade, unidade_medida FROM estoque_pro WHERE unidade_atual = %s AND unidade_origem != %s"
     df_emprestados = run_query(query_emprestados, (unidade_atual_filtro, unidade_atual_filtro))
     
@@ -491,13 +517,11 @@ elif menu == "Devolução em Lote":
                     nome = item['nome_item']
                     qtd = item['quantidade']
                     
-                    # Atualiza a unidade atual do item para a origem
                     execute_db("UPDATE estoque_pro SET unidade_atual = %s WHERE id = %s", (origem, i_id))
                     
-                    # Registra no histórico
                     execute_db(
                         "INSERT INTO movimentacoes_pro (data_hora, unidade, nome_item, tipo, quantidade, responsavel) VALUES (%s, %s, %s, %s, %s, %s)",
-                        (data_atual, f"{unidade_atual_filtro} ➔ {origem} (DEVOLUÇÃO)", nome, "DEVOLUÇÃO EM LOTE", qtd, "Responsável Local")
+                        (data_atual, f"{unidade_atual_filtro} ➔ {origem} (DEVOLUÇÃO EM LOTE)", nome, "DEVOLUÇÃO", qtd, "Responsável Local")
                     )
                 st.success("Devolução em lote realizada com sucesso para todos os itens selecionados.")
                 st.rerun()
