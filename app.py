@@ -43,12 +43,6 @@ st.markdown("""
         background-color: #003366;
         color: white;
     }
-    
-    /* Botão de Exclusão em Vermelho Corporativo */
-    .stButton.delete-btn>button {
-        background-color: #c0392b !important;
-        color: white !important;
-    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -99,14 +93,12 @@ def init_db():
             """)
             conn.commit()
 
-# Inicialização segura com indicador de carregamento
 with st.spinner("Inicializando o sistema e conectando ao banco de dados..."):
     try:
         init_db()
     except Exception as e:
         st.error(f"Erro ao inicializar o banco de dados: {e}")
 
-# CACHE OTIMIZADO
 @st.cache_data(ttl=300)
 def run_query(query, params=()):
     with get_connection() as conn:
@@ -123,7 +115,6 @@ def execute_db(query, params=()):
             conn.commit()
     st.cache_data.clear() 
 
-# UPLOAD DE IMAGEM
 def upload_imgbb(imagem_upload):
     try:
         img = Image.open(imagem_upload)
@@ -148,7 +139,7 @@ def upload_imgbb(imagem_upload):
         st.error(f"Erro ao processar imagem: {e}")
         return None
 
-# --- CABEÇALHO COM LOGOTIPO INSTITUCIONAL DO SENAI ---
+# --- CABEÇALHO ---
 col_logo, col_titulo = st.columns([1, 4])
 with col_logo:
     st.image("https://logodownload.org/wp-content/uploads/2019/08/senai-logo-1.png", width=140)
@@ -158,11 +149,11 @@ with col_titulo:
 
 st.divider()
 
-# --- BARRA LATERAL DE NAVEGAÇÃO ---
+# --- BARRA LATERAL ---
 st.sidebar.markdown("### Menu Principal")
 menu = st.sidebar.selectbox(
     "Escolha uma opção",
-    ["Visualizar Estoque", "Entrada de Materiais", "Saída / Empréstimo / Edição", "Histórico de Movimentações"]
+    ["Visualizar Estoque", "Entrada de Materiais", "Saída / Empréstimo / Edição", "Devolução em Lote", "Histórico de Movimentações"]
 )
 
 UNIDADES_PADRAO = ["SENAI Barreiras", "SENAI Luis Eduardo", "Almoxarifado Central"]
@@ -171,9 +162,9 @@ CATEGORIAS_PADRAO = [
     "Ferramentas de Medição", "Ferramentas Elétricas", "Kits Didáticos", "EPIs"
 ]
 
-# --- TELA 1: CONSULTA DE ESTOQUE ---
+# --- TELA 1: CONSULTA DE ESTOQUE COM CHECKLIST DE CONFERÊNCIA ---
 if menu == "Visualizar Estoque":
-    st.subheader("Catálogo Geral de Materiais")
+    st.subheader("Catálogo Geral de Materiais e Conferência Física")
     
     col1, col2 = st.columns(2)
     with col1:
@@ -195,7 +186,6 @@ if menu == "Visualizar Estoque":
             df_estoque = run_query(query, tuple(params))
         
         if not df_estoque.empty:
-            # Métricas estilizadas e limpas com cores personalizadas via HTML
             m1, m2, m3 = st.columns(3)
             with m1:
                 st.markdown(f"""<div style="background-color:#eef4fb; padding:12px; border-radius:6px; border-left:4px solid #004a87;">
@@ -211,25 +201,38 @@ if menu == "Visualizar Estoque":
                     <span style="font-size:22px; font-weight:bold; color:#004a87;">{df_estoque['categoria'].nunique()}</span></div>""", unsafe_allow_html=True)
             
             st.markdown("<br>", unsafe_allow_html=True)
-
-            c_cod, c_img, c_desc, c_cat, c_loc, c_qtd = st.columns([1, 2, 3, 2, 2, 2])
-            c_cod.write("**CÓDIGOS**")
+            st.markdown("**Painel de Conferência de Inventário:** Marque os itens abaixo conforme forem conferidos fisicamente.")
+            
+            c_chk, c_cod, c_img, c_desc, c_cat, c_loc, c_qtd, c_acao = st.columns([1, 1, 2, 3, 2, 2, 2, 2])
+            c_chk.write("**STATUS**")
+            c_cod.write("**CÓD**")
             c_img.write("**FOTO**")
             c_desc.write("**MATERIAL**")
             c_cat.write("**CATEGORIA**")
-            c_loc.write("**LOCALIZAÇÃO / ORIGEM**")
-            c_qtd.write("**QUANTIDADE**")
+            c_loc.write("**LOCAL / ORIGEM**")
+            c_qtd.write("**QTD**")
+            c_acao.write("**AÇÃO**")
             st.divider()
 
+            # Inicializa estado para guardar os itens conferidos na sessão
+            if 'conferidos' not in st.session_state:
+                st.session_state['conferidos'] = {}
+
             for _, row in df_estoque.iterrows():
-                c_cod, c_img, c_desc, c_cat, c_loc, c_qtd = st.columns([1, 2, 3, 2, 2, 2], vertical_alignment="center")
+                item_id = row['id']
+                c_chk, c_cod, c_img, c_desc, c_cat, c_loc, c_qtd, c_acao = st.columns([1, 1, 2, 3, 2, 2, 2, 2], vertical_alignment="center")
                 
-                c_cod.write(f"#{row['id']}")
+                # Checkbox de conferência
+                ja_conferido = st.session_state['conferidos'].get(item_id, False)
+                marcado = c_chk.checkbox("", value=ja_conferido, key=f"conf_{item_id}")
+                st.session_state['conferidos'][item_id] = marcado
+                
+                c_cod.write(f"#{item_id}")
                 
                 url_img = row.get("url_imagem")
                 if url_img and str(url_img).startswith("http"):
                     try:
-                        c_img.image(url_img, width=70)
+                        c_img.image(url_img, width=60)
                     except Exception:
                         c_img.caption("Indisponível")
                 else:
@@ -242,11 +245,22 @@ if menu == "Visualizar Estoque":
                 atual = row.get("unidade_atual", "Desconhecida")
                 
                 if origem != atual:
-                    c_loc.markdown(f"**{atual}**<br><span style='color:#c0392b; font-size:12px;'>Origem: {origem}</span>", unsafe_allow_html=True)
+                    c_loc.markdown(f"**{atual}**<br><span style='color:#c0392b; font-size:11px;'>Origem: {origem}</span>", unsafe_allow_html=True)
                 else:
                     c_loc.write(atual)
-                    
-                c_qtd.write(f"**{row['quantidade']}** {row['unidade_medida']}")
+                
+                # Alerta visual se estoque estiver baixo (ex: <= 2)
+                qtd_val = row['quantidade']
+                if qtd_val <= 2:
+                    c_qtd.markdown(f"<span style='color:red; font-weight:bold;'>{qtd_val} {row['unidade_medida']} ⚠️</span>", unsafe_allow_html=True)
+                else:
+                    c_qtd.write(f"**{qtd_val}** {row['unidade_medida']}")
+                
+                # Botão rápido para ir direto à edição deste item
+                if c_acao.button("Editar", key=f"edit_btn_{item_id}"):
+                    st.session_state['item_para_editar'] = item_id
+                    st.success(f"Item #{item_id} selecionado. Vá para a aba 'Saída / Empréstimo / Edição' para alterá-lo.")
+                
                 st.divider()
         else:
             st.info("Nenhum material encontrado com os filtros selecionados.")
@@ -318,9 +332,16 @@ elif menu == "Saída / Empréstimo / Edição":
     if itens_disponiveis.empty:
         st.warning("Nenhum item cadastrado nesta unidade.")
     else:
-        opcoes_itens = {row["id"]: f"{row['nome_item']} (Qtd: {row['quantidade']} {row['unidade_medida']}) - Origem: {row['unidade_origem']}" for _, row in itens_disponiveis.iterrows()}
+        opcoes_itens = {row["id"]: f"#{row['id']} - {row['nome_item']} (Qtd: {row['quantidade']} {row['unidade_medida']}) - Origem: {row['unidade_origem']}" for _, row in itens_disponiveis.iterrows()}
+        
+        # Verifica se veio pré-selecionado da aba de visualização
+        default_idx = 0
+        if 'item_para_editar' in st.session_state and st.session_state['item_para_editar'] in opcoes_itens:
+            keys_list = list(opcoes_itens.keys())
+            default_idx = keys_list.index(st.session_state['item_para_editar'])
+
         item_id_selecionado = st.selectbox(
-            "Selecione o Material", options=list(opcoes_itens.keys()), format_func=lambda x: opcoes_itens[x]
+            "Selecione o Material", options=list(opcoes_itens.keys()), index=default_idx, format_func=lambda x: opcoes_itens[x]
         )
         
         dados_item = itens_disponiveis[itens_disponiveis["id"] == item_id_selecionado].iloc[0]
@@ -404,7 +425,6 @@ elif menu == "Saída / Empréstimo / Edição":
             novo_nome = st.text_input("Corrigir Nome do Material", value=nome_selecionado)
             nova_qtd_total = st.number_input("Corrigir Quantidade Total", min_value=0, value=int(qtd_atual), step=1)
             
-            # Opção para corrigir a unidade de origem (caso cadastrado na unidade errada antes)
             idx_origem = UNIDADES_PADRAO.index(origem_atual) if origem_atual in UNIDADES_PADRAO else 0
             nova_origem = st.selectbox("Corrigir Unidade Proprietária (Origem Correta)", UNIDADES_PADRAO, index=idx_origem)
             
@@ -440,7 +460,51 @@ elif menu == "Saída / Empréstimo / Edição":
                     else:
                         st.error("Marque a caixa de confirmação para poder excluir o item.")
 
-# --- TELA 4: HISTÓRICO E AUDITORIA ---
+# --- TELA 4: DEVOLUÇÃO EM LOTE PARA A ORIGEM ---
+elif menu == "Devolução em Lote":
+    st.subheader("Devolução Rápida de Materiais Emprestados para a Origem")
+    st.markdown("Esta ferramenta lista todos os materiais que estão em uma unidade física diferente da sua unidade de origem, permitindo retorná-los em lote rapidamente.")
+    
+    unidade_atual_filtro = st.selectbox("Selecione a Unidade onde os materiais estão no momento", UNIDADES_PADRAO)
+    
+    # Busca itens onde a unidade atual é a selecionada, mas a origem é diferente
+    query_emprestados = "SELECT id, unidade_origem, unidade_atual, nome_item, categoria, quantidade, unidade_medida FROM estoque_pro WHERE unidade_atual = %s AND unidade_origem != %s"
+    df_emprestados = run_query(query_emprestados, (unidade_atual_filtro, unidade_atual_filtro))
+    
+    if not df_emprestados.empty:
+        st.markdown(f"Foram encontrados **{len(df_emprestados)}** itens emprestados nesta unidade.")
+        
+        with st.form("form_devolucao_lote"):
+            itens_a_devolver = []
+            for _, row in df_emprestados.iterrows():
+                devolver = st.checkbox(f"Devolver **{row['nome_item']}** (Qtd: {row['quantidade']} {row['unidade_medida']}) para **{row['unidade_origem']}**", value=True, key=f"dev_{row['id']}")
+                if devolver:
+                    itens_a_devolver.append(row)
+            
+            btn_devolver = st.form_submit_button("Confirmar Devolução em Lote para a Origem")
+            
+            if btn_devolver:
+                data_atual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                for item in itens_a_devolver:
+                    i_id = item['id']
+                    origem = item['unidade_origem']
+                    nome = item['nome_item']
+                    qtd = item['quantidade']
+                    
+                    # Atualiza a unidade atual do item para a origem
+                    execute_db("UPDATE estoque_pro SET unidade_atual = %s WHERE id = %s", (origem, i_id))
+                    
+                    # Registra no histórico
+                    execute_db(
+                        "INSERT INTO movimentacoes_pro (data_hora, unidade, nome_item, tipo, quantidade, responsavel) VALUES (%s, %s, %s, %s, %s, %s)",
+                        (data_atual, f"{unidade_atual_filtro} ➔ {origem} (DEVOLUÇÃO)", nome, "DEVOLUÇÃO EM LOTE", qtd, "Responsável Local")
+                    )
+                st.success("Devolução em lote realizada com sucesso para todos os itens selecionados.")
+                st.rerun()
+    else:
+        st.info("Não há materiais emprestados de outras unidades nesta localidade no momento.")
+
+# --- TELA 5: HISTÓRICO E AUDITORIA ---
 elif menu == "Histórico de Movimentações":
     st.subheader("Auditoria de Movimentações (Entradas, Saídas e Empréstimos)")
     
@@ -454,7 +518,6 @@ elif menu == "Histórico de Movimentações":
         df_logs = run_query("SELECT data_hora, unidade, nome_item, tipo, quantidade FROM movimentacoes_pro ORDER BY id DESC")
         
     if not df_logs.empty:
-        # Converte a coluna de data para filtrar pelo período escolhido
         df_logs['data_convertida'] = pd.to_datetime(df_logs['data_hora']).dt.date
         df_filtrado = df_logs[
             (df_logs['data_convertida'] >= data_inicio) & 
